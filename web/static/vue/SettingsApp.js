@@ -131,13 +131,13 @@ export default defineComponent({
             </div>
 
             <!-- Page content (only the active page is rendered) -->
-            <component
-              v-for="page in pages"
-              :is="page.component"
-              v-show="currentPage === page.name"
-              :key="page.name"
-              :store="store"
-            />
+            <template v-for="page in pages" :key="page.name">
+              <component
+                :is="page.component"
+                v-if="currentPage === page.name"
+                :store="store"
+              />
+            </template>
 
             <!-- Save button -->
             <div class="d-grid mb-3">
