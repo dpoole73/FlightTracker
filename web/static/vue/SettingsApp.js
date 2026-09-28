@@ -130,14 +130,16 @@ export default defineComponent({
               <strong>Error saving settings:</strong> {{ store.ui.serverError }}
             </div>
 
-            <!-- Page content (only the active page is rendered) -->
-            <template v-for="page in pages" :key="page.name">
-              <component
-                :is="page.component"
-                v-if="currentPage === page.name"
-                :store="store"
-              />
-            </template>
+            <!-- Page content: every page stays mounted so all of its inputs
+                 remain part of the form payload on save; v-show (not v-if)
+                 toggles visibility only -->
+            <component
+              v-for="page in pages"
+              :is="page.component"
+              v-show="currentPage === page.name"
+              :key="page.name"
+              :store="store"
+            />
 
             <!-- Save button -->
             <div class="d-grid mb-3">
