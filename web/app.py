@@ -57,6 +57,8 @@ from utilities.updater import (
     version_string,
 )
 from version import VERSION
+from setup.configuration import IDLE_THEME_CHOICES
+
 
 # Port is read from config.json via Config.web_port (default 8584).
 FLASK_PORT = Config.instance().web_port
@@ -638,6 +640,41 @@ def parse_settings_form(form, cfg) -> dict:
                 else "classic"
             )
         ),
+       
+         # Idle screen rotation
+        "idle_theme_order": [
+            v
+            for v in str_val(form.get("idle_theme_order"), "").split(",")
+            if v in IDLE_THEME_CHOICES
+        ] or ["classic"],
+        "idle_theme_rotation_seconds": max(
+            3, int_val(form.get("idle_theme_rotation_seconds"), 15)
+        ),
+ 
+        # Stock ticker idle theme
+        "stock_api_key": str_val(form.get("stock_api_key"), cfg.stock_api_key),
+        "stock_symbol": str_val(form.get("stock_symbol"), cfg.stock_symbol).upper()[:8],
+        "stock_refresh_seconds": max(
+            60, int_val(form.get("stock_refresh_seconds"), 300)
+        ),
+ 
+        # Solar idle theme
+        "solar_client_id": str_val(form.get("solar_client_id"), cfg.solar_client_id),
+        "solar_client_secret": str_val(
+            form.get("solar_client_secret"), cfg.solar_client_secret
+        ),
+        "solar_api_key": str_val(form.get("solar_api_key"), cfg.solar_api_key),
+        "solar_system_id": str_val(form.get("solar_system_id"), cfg.solar_system_id),
+        "solar_refresh_token": str_val(
+            form.get("solar_refresh_token"), cfg.solar_refresh_token
+        ),
+        "solar_refresh_seconds": max(
+            300, int_val(form.get("solar_refresh_seconds"), 3600)
+        ),
+        "solar_lookback_days": max(
+            1, min(16, int_val(form.get("solar_lookback_days"), 14))
+        ),
+
         # Web interface
         "web_interface_enabled": bool_val(form.get("web_interface_enabled")),
         "web_port": max(1024, min(65535, int_val(form.get("web_port"), cfg.web_port))),
@@ -714,6 +751,8 @@ def parse_settings_form(form, cfg) -> dict:
         "satellite_timeout_seconds": max(
             5, min(3600, int_val(form.get("satellite_timeout_seconds"), 30))
         ),
+        "stock_ticker_enabled": bool_val(form.get("stock_ticker_enabled")),
+        "stock_ticker_symbol": str_val(form.get("stock_ticker_symbol"), "MSFT"),
         "_version": VERSION,
     }
 

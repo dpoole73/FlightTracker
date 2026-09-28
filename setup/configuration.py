@@ -125,6 +125,35 @@ DEFAULT_NUMBER_SEPARATOR = "none"  # 'none', 'comma', 'period'
 # Idle screen theme
 DEFAULT_IDLE_SCREEN_THEME = "classic"  # classic / forecast
 
+# Idle screen rotation - which themes are enabled, in what order, and how
+# long each stays on screen before rotating to the next. A theme absent
+# from this list is effectively disabled. Defaults to the single classic
+# theme so upgrading existing installs doesn't change behaviour.
+DEFAULT_IDLE_THEME_ORDER = [DEFAULT_IDLE_SCREEN_THEME]  # ["classic"]
+DEFAULT_IDLE_THEME_ROTATION_SECONDS = 15
+ 
+# All theme keys the rotator knows how to build. Kept as a constant (rather
+# than deriving from the registry) so validation doesn't need to import
+# scene code, avoiding a circular import from setup -> scenes -> setup.
+IDLE_THEME_CHOICES = ("classic", "forecast", "conditions", "stock", "solar")
+ 
+# Stock ticker idle theme
+DEFAULT_STOCK_API_KEY = ""
+DEFAULT_STOCK_SYMBOL = "MSFT"
+DEFAULT_STOCK_REFRESH_SECONDS = 300  # Alpha Vantage free tier: mind rate limits
+
+ # Solar idle theme (Enphase Enlighten API)
+DEFAULT_SOLAR_CLIENT_ID = ""
+DEFAULT_SOLAR_CLIENT_SECRET = ""
+DEFAULT_SOLAR_API_KEY = ""
+DEFAULT_SOLAR_SYSTEM_ID = ""
+# One-time seed only - used to bootstrap solar_token_cache.json on first
+# run. After that, SolarService reads/writes the rotating token from the
+# cache file next to config.json, not from here.
+DEFAULT_SOLAR_REFRESH_TOKEN = ""
+DEFAULT_SOLAR_REFRESH_SECONDS = 3600  # hourly, matches Enphase's own data granularity
+DEFAULT_SOLAR_LOOKBACK_DAYS = 14
+
 # Web interface
 DEFAULT_WEB_INTERFACE_ENABLED = True
 DEFAULT_WEB_PORT = 8584  # TCP port for the Flask config server
@@ -241,6 +270,25 @@ DEFAULTS: dict[str, Any] = {
     "image_api_key": DEFAULT_IMAGE_API_KEY,
     # Display
     "colour_theme": DEFAULT_COLOUR_THEME,
+    #    # Idle screen theme
+    "idle_screen_theme": DEFAULT_IDLE_SCREEN_THEME,
+    "idle_theme_order": DEFAULT_IDLE_THEME_ORDER,
+    "idle_theme_rotation_seconds": DEFAULT_IDLE_THEME_ROTATION_SECONDS,
+
+    # Stock ticker idle theme
+    "stock_api_key": DEFAULT_STOCK_API_KEY,
+    "stock_symbol": DEFAULT_STOCK_SYMBOL,
+    "stock_refresh_seconds": DEFAULT_STOCK_REFRESH_SECONDS,
+
+    # Solar idle theme
+    "solar_client_id": DEFAULT_SOLAR_CLIENT_ID,
+    "solar_client_secret": DEFAULT_SOLAR_CLIENT_SECRET,
+    "solar_api_key": DEFAULT_SOLAR_API_KEY,
+    "solar_system_id": DEFAULT_SOLAR_SYSTEM_ID,
+    "solar_refresh_token": DEFAULT_SOLAR_REFRESH_TOKEN,
+    "solar_refresh_seconds": DEFAULT_SOLAR_REFRESH_SECONDS,
+    "solar_lookback_days": DEFAULT_SOLAR_LOOKBACK_DAYS,
+ 
     # Per-theme configuration (nested dict)
     "theme": DEFAULT_THEME,
     "brightness_mode": DEFAULT_BRIGHTNESS_MODE,
@@ -1353,6 +1401,90 @@ class Config:
             if val in ("classic", "forecast", "conditions")
             else DEFAULT_IDLE_SCREEN_THEME
         )
+
+    @property
+    def idle_theme_order(self) -> list[str]:
+        """Ordered list of enabled idle-screen theme keys. Unknown keys are
+        dropped silently so a bad/old config.json never breaks the rotator.
+        An empty result falls back to the single default theme."""
+        val = self.data_store.get("idle_theme_order", DEFAULT_IDLE_THEME_ORDER)
+        if not isinstance(val, list):
+            return list(DEFAULT_IDLE_THEME_ORDER)
+        cleaned = [str(v).lower() for v in val if str(v).lower() in IDLE_THEME_CHOICES]
+        return cleaned or list(DEFAULT_IDLE_THEME_ORDER)
+ 
+    @property
+    def idle_theme_rotation_seconds(self) -> int:
+        """Seconds each idle theme stays on screen before rotating. Only
+        matters when more than one theme is enabled."""
+        val = self.data_store.get(
+            "idle_theme_rotation_seconds", DEFAULT_IDLE_THEME_ROTATION_SECONDS
+        )
+        try:
+            val = int(val)
+        except (TypeError, ValueError):
+            return DEFAULT_IDLE_THEME_ROTATION_SECONDS
+        return max(3, val)  # guard against a 0/negative value spinning the CPU
+ 
+    @property
+    def stock_api_key(self) -> str:
+        return str(self.data_store.get("stock_api_key", DEFAULT_STOCK_API_KEY))
+ 
+    @property
+    def stock_symbol(self) -> str:
+        val = str(self.data_store.get("stock_symbol", DEFAULT_STOCK_SYMBOL)).strip()
+        return (val or DEFAULT_STOCK_SYMBOL).upper()
+ 
+    @property
+    def stock_refresh_seconds(self) -> int:
+        val = self.data_store.get(
+            "stock_refresh_seconds", DEFAULT_STOCK_REFRESH_SECONDS
+        )
+        try:
+            val = int(val)
+        except (TypeError, ValueError):
+            return DEFAULT_STOCK_REFRESH_SECONDS
+        return max(60, val)  # don't allow sub-minute polling against a rate-limited API
+
+    @property
+    def solar_client_id(self) -> str:
+        return str(self.data_store.get("solar_client_id", DEFAULT_SOLAR_CLIENT_ID))
+ 
+    @property
+    def solar_client_secret(self) -> str:
+        return str(self.data_store.get("solar_client_secret", DEFAULT_SOLAR_CLIENT_SECRET))
+ 
+    @property
+    def solar_api_key(self) -> str:
+        return str(self.data_store.get("solar_api_key", DEFAULT_SOLAR_API_KEY))
+ 
+    @property
+    def solar_system_id(self) -> str:
+        return str(self.data_store.get("solar_system_id", DEFAULT_SOLAR_SYSTEM_ID))
+ 
+    @property
+    def solar_refresh_token(self) -> str:
+        return str(self.data_store.get("solar_refresh_token", DEFAULT_SOLAR_REFRESH_TOKEN))
+ 
+    @property
+    def solar_refresh_seconds(self) -> int:
+        val = self.data_store.get("solar_refresh_seconds", DEFAULT_SOLAR_REFRESH_SECONDS)
+        try:
+            val = int(val)
+        except (TypeError, ValueError):
+            return DEFAULT_SOLAR_REFRESH_SECONDS
+        return max(300, val)  # don't allow sub-5-minute polling against a rate-limited API
+ 
+    @property
+    def solar_lookback_days(self) -> int:
+        val = self.data_store.get("solar_lookback_days", DEFAULT_SOLAR_LOOKBACK_DAYS)
+        try:
+            val = int(val)
+        except (TypeError, ValueError):
+            return DEFAULT_SOLAR_LOOKBACK_DAYS
+        # Clamped to what the panel can actually render (see MAX_POINTS in
+        # solar_idle_theme.py: (screen.WIDTH // 2) // 2 = 16 for a 64px panel).
+        return max(1, min(16, val))
 
     @property
     def web_interface_enabled(self) -> bool:

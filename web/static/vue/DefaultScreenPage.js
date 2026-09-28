@@ -1,15 +1,35 @@
 /**
- * Default Screen page - idle screen theme selector and per-theme settings.
+ * Default Screen page - idle screen theme rotation and per-theme settings.
  */
 
 import { defineComponent } from "./vendor.js";
+
+// Known idle themes. Order here only affects the "Add a screen" button
+// order, not the rotation order (that's store.config.idle_theme_order).
+const THEME_META = {
+  classic: { label: "Classic", icon: "bi-clock" },
+  forecast: { label: "Forecast", icon: "bi-cloud-sun-fill" },
+  conditions: { label: "Current Conditions", icon: "bi-thermometer-half" },
+  stock: { label: "Stock Ticker", icon: "bi-graph-up-arrow" },
+  solar: { label: "Solar Panel", icon: "bi-sun" },
+};
 
 export default defineComponent({
   name: "DefaultScreenPage",
   props: {
     store: { type: Object, required: true },
   },
+  data() {
+    return { themeMeta: THEME_META };
+  },
   computed: {
+    activeThemes() {
+      return this.store.config.idle_theme_order || [];
+    },
+    availableThemes() {
+      const active = this.activeThemes;
+      return Object.keys(THEME_META).filter((k) => !active.includes(k));
+    },
     forecastDuration: {
       get() {
         return this.store.config.theme?.forecast?.duration || "3hour";
@@ -31,30 +51,87 @@ export default defineComponent({
       },
     },
   },
+  methods: {
+    addTheme(key) {
+      this.store.config.idle_theme_order = [...this.activeThemes, key];
+    },
+    removeTheme(key) {
+      this.store.config.idle_theme_order = this.activeThemes.filter((k) => k !== key);
+    },
+    moveUp(index) {
+      if (index === 0) return;
+      const list = [...this.activeThemes];
+      [list[index - 1], list[index]] = [list[index], list[index - 1]];
+      this.store.config.idle_theme_order = list;
+    },
+    moveDown(index) {
+      const list = [...this.activeThemes];
+      if (index === list.length - 1) return;
+      [list[index], list[index + 1]] = [list[index + 1], list[index]];
+      this.store.config.idle_theme_order = list;
+    },
+  },
   template: `
     <div>
     <h2 class="fs-4 fw-semibold mb-3"><i class="bi bi-house me-2"></i>Default Screen</h2>
 
-    <!-- ====== Theme selector ====== -->
+    <!-- ====== Idle screen rotation ====== -->
     <div id="group-theme" class="card mb-3 p-3">
-      <p class="section-heading"><i class="bi bi-palette me-2"></i>Theme</p>
+      <p class="section-heading"><i class="bi bi-palette me-2"></i>Idle Screens</p>
+      <p class="form-text text-muted small mb-2">
+        Choose what to display when no flights or satellites are overhead. Enable more than
+        one to rotate between them.
+      </p>
 
-      <div class="mb-3">
-        <h5>Idle Screen Theme</h5>
-        <select class="form-select form-select-sm" name="idle_screen_theme" id="idle_screen_theme"
-                style="max-width:200px" v-model="store.config.idle_screen_theme">
-          <option value="classic">Classic</option>
-          <option value="conditions">Current Conditions</option>
-          <option value="forecast">Forecast</option>
-        </select>
-        <div class="form-text text-muted small">
-          Choose what to display on the idle screen when no flights or satellites are overhead.
+      <!-- Serialised for the classic form POST, same approach as satellite_norad_ids -->
+      <input type="hidden" name="idle_theme_order" :value="activeThemes.join(',')" />
+
+      <ul class="list-group mb-3">
+        <li v-for="(key, index) in activeThemes" :key="key"
+            class="list-group-item d-flex align-items-center justify-content-between">
+          <span><i :class="'bi me-2 ' + themeMeta[key].icon"></i>{{ themeMeta[key].label }}</span>
+          <span>
+            <button type="button" class="btn btn-sm btn-outline-secondary me-1"
+                    :disabled="index === 0" @click="moveUp(index)" title="Move up">
+              <i class="bi bi-arrow-up"></i>
+            </button>
+            <button type="button" class="btn btn-sm btn-outline-secondary me-1"
+                    :disabled="index === activeThemes.length - 1" @click="moveDown(index)" title="Move down">
+              <i class="bi bi-arrow-down"></i>
+            </button>
+            <button type="button" class="btn btn-sm btn-outline-danger"
+                    @click="removeTheme(key)" title="Disable">
+              <i class="bi bi-x-lg"></i>
+            </button>
+          </span>
+        </li>
+        <li v-if="activeThemes.length === 0" class="list-group-item text-muted small">
+          No idle screens enabled - add one below.
+        </li>
+      </ul>
+
+      <div v-if="availableThemes.length" class="mb-2">
+        <span class="text-muted small me-2">Add a screen:</span>
+        <button v-for="key in availableThemes" :key="key" type="button"
+                class="btn btn-sm btn-outline-primary me-1 mb-1"
+                @click="addTheme(key)">
+          <i :class="'bi me-1 ' + themeMeta[key].icon"></i>{{ themeMeta[key].label }}
+        </button>
+      </div>
+
+      <div v-show="activeThemes.length > 1" class="mt-3">
+        <h5>Rotation Interval</h5>
+        <div class="input-group input-group-sm" style="max-width:180px">
+          <input type="number" class="form-control" name="idle_theme_rotation_seconds"
+                 v-model.number="store.config.idle_theme_rotation_seconds" min="3" max="600" />
+          <span class="input-group-text">seconds</span>
         </div>
+        <div class="form-text text-muted small">How long each idle screen stays up before rotating to the next.</div>
       </div>
     </div>
 
     <!-- ====== Classic theme ====== -->
-    <div v-show="store.config.idle_screen_theme === 'classic'">
+    <div v-show="activeThemes.includes('classic')">
       <div id="group-weather" class="card mb-3 p-3">
         <p class="section-heading"><i class="bi bi-cloud-sun me-2"></i>Weather</p>
 
@@ -120,7 +197,7 @@ export default defineComponent({
     </div>
 
     <!-- ====== Forecast theme ====== -->
-    <div v-show="store.config.idle_screen_theme === 'forecast'">
+    <div v-show="activeThemes.includes('forecast')">
       <div class="card mb-3 p-3">
         <p class="section-heading"><i class="bi bi-cloud-sun-fill me-2"></i>Forecast</p>
         <p class="text-muted small mb-0">Display upcoming weather forecasts as icons on the idle screen.</p>
@@ -150,7 +227,7 @@ export default defineComponent({
     </div>
 
     <!-- ====== Current Conditions theme ====== -->
-    <div v-show="store.config.idle_screen_theme === 'conditions'">
+    <div v-show="activeThemes.includes('conditions')">
       <div class="card mb-3 p-3">
         <p class="section-heading"><i class="bi bi-thermometer-half me-2"></i>Current Conditions</p>
         <p class="text-muted small mb-0">
@@ -164,6 +241,122 @@ export default defineComponent({
           <input type="checkbox" class="form-check-input" name="theme_conditions_disable_scroll"
                  id="theme_conditions_disable_scroll" v-model="conditionsDisableScroll" />
           <label class="form-check-label" for="theme_conditions_disable_scroll">Disable scrolling weather description</label>
+        </div>
+      </div>
+    </div>
+
+    <!-- ====== Stock theme ====== -->
+    <div v-show="activeThemes.includes('stock')">
+      <div class="card mb-3 p-3">
+        <p class="section-heading"><i class="bi bi-graph-up-arrow me-2"></i>Stock Ticker</p>
+        <p class="text-muted small mb-2">
+          Shows a live stock price and change percentage, via the
+          <a href="https://www.alphavantage.co/support/#api-key" target="_blank" rel="noopener noreferrer">Alpha Vantage</a>
+          free API.
+        </p>
+
+        <div class="mb-3">
+          <label class="form-label small" for="stock_symbol">Symbol</label>
+          <input type="text" maxlength="8" class="form-control form-control-sm" style="max-width:120px;text-transform:uppercase"
+                 name="stock_symbol" id="stock_symbol"
+                 :value="store.config.stock_symbol"
+                 @input="store.config.stock_symbol = $event.target.value.toUpperCase()"
+                 placeholder="e.g. MSFT" />
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label small" for="stock_api_key">API Key</label>
+          <input type="text" class="form-control form-control-sm" style="max-width:320px"
+                 name="stock_api_key" id="stock_api_key"
+                 v-model="store.config.stock_api_key" placeholder="Alpha Vantage API key" />
+        </div>
+
+        <div class="mb-1">
+          <label class="form-label small" for="stock_refresh_seconds">Refresh interval (seconds)</label>
+          <input type="number" class="form-control form-control-sm" style="max-width:140px"
+                 name="stock_refresh_seconds" id="stock_refresh_seconds"
+                 v-model.number="store.config.stock_refresh_seconds" min="60" max="3600" />
+          <div class="form-text text-muted small">
+            The free API tier is rate-limited - don't set this too low.
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ====== Solar theme ====== -->
+    <div v-show="activeThemes.includes('solar')">
+      <div class="card mb-3 p-3">
+        <p class="section-heading"><i class="bi bi-sun me-2"></i>Solar Panel</p>
+        <p class="text-muted small mb-2">
+          Shows a usage-vs-generation bar graph via the Enphase Enlighten API. Requires a
+          one-time OAuth setup outside this app (see the project README) to obtain the
+          initial refresh token below.
+        </p>
+
+        <div class="row g-2 mb-2">
+          <div class="col-12 col-sm-6">
+            <label class="form-label small" for="solar_client_id">Client ID</label>
+            <input type="text" class="form-control form-control-sm"
+                   name="solar_client_id" id="solar_client_id"
+                   v-model="store.config.solar_client_id"
+                   placeholder="Enphase app client ID" autocomplete="off" />
+          </div>
+          <div class="col-12 col-sm-6">
+            <label class="form-label small" for="solar_client_secret">Client Secret</label>
+            <input type="password" class="form-control form-control-sm"
+                   name="solar_client_secret" id="solar_client_secret"
+                   v-model="store.config.solar_client_secret"
+                   placeholder="Enphase app client secret" autocomplete="new-password" />
+          </div>
+        </div>
+
+        <div class="row g-2 mb-2">
+          <div class="col-12 col-sm-6">
+            <label class="form-label small" for="solar_api_key">API Key</label>
+            <input type="password" class="form-control form-control-sm"
+                   name="solar_api_key" id="solar_api_key"
+                   v-model="store.config.solar_api_key"
+                   placeholder="Enphase API key" autocomplete="new-password" />
+          </div>
+          <div class="col-12 col-sm-6">
+            <label class="form-label small" for="solar_system_id">System ID</label>
+            <input type="text" class="form-control form-control-sm"
+                   name="solar_system_id" id="solar_system_id"
+                   v-model="store.config.solar_system_id"
+                   placeholder="e.g. 2631222" autocomplete="off" />
+          </div>
+        </div>
+
+        <div class="mb-3">
+          <label class="form-label small" for="solar_refresh_token">Initial Refresh Token</label>
+          <input type="password" class="form-control form-control-sm"
+                 name="solar_refresh_token" id="solar_refresh_token"
+                 v-model="store.config.solar_refresh_token"
+                 placeholder="One-time seed from the OAuth authorization-code exchange"
+                 autocomplete="new-password" />
+          <div class="form-text text-muted small">
+            Only used to bootstrap the first token refresh. After that the app manages its
+            own rotating token automatically - you shouldn't need to touch this again unless
+            you re-authorize from scratch.
+          </div>
+        </div>
+
+        <hr class="my-3" />
+
+        <div class="row g-2">
+          <div class="col-auto">
+            <label class="form-label small" for="solar_refresh_seconds">Refresh interval (seconds)</label>
+            <input type="number" class="form-control form-control-sm" style="width:8rem"
+                   name="solar_refresh_seconds" id="solar_refresh_seconds"
+                   v-model.number="store.config.solar_refresh_seconds" min="300" max="86400" />
+          </div>
+          <div class="col-auto">
+            <label class="form-label small" for="solar_lookback_days">Lookback window (days)</label>
+            <input type="number" class="form-control form-control-sm" style="width:8rem"
+                   name="solar_lookback_days" id="solar_lookback_days"
+                   v-model.number="store.config.solar_lookback_days" min="1" max="16" />
+            <div class="form-text text-muted small">Max 16 - limited by how many bars fit on the panel.</div>
+          </div>
         </div>
       </div>
     </div>
