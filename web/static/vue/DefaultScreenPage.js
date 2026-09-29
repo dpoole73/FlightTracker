@@ -12,6 +12,7 @@ const THEME_META = {
   conditions: { label: "Current Conditions", icon: "bi-thermometer-half" },
   stock: { label: "Stock Ticker", icon: "bi-graph-up-arrow" },
   solar: { label: "Solar Panel", icon: "bi-sun" },
+  solar_history: { label: "Solar History", icon: "bi-bar-chart-fill" },
 };
 
 export default defineComponent({
@@ -283,14 +284,13 @@ export default defineComponent({
       </div>
     </div>
 
-    <!-- ====== Solar theme ====== -->
-    <div v-show="activeThemes.includes('solar')">
+    <!-- ====== Solar (shared auth) + Solar Live + Solar History ====== -->
+    <div v-show="activeThemes.includes('solar') || activeThemes.includes('solar_history')">
       <div class="card mb-3 p-3">
-        <p class="section-heading"><i class="bi bi-sun me-2"></i>Solar Panel</p>
+        <p class="section-heading"><i class="bi bi-sun me-2"></i>Solar - Enphase Account</p>
         <p class="text-muted small mb-2">
-          Shows a usage-vs-generation bar graph via the Enphase Enlighten API. Requires a
-          one-time OAuth setup outside this app (see the project README) to obtain the
-          initial refresh token below.
+          Shared by both solar screens below. Requires a one-time OAuth setup outside this
+          app (see the project README) to obtain the initial refresh token.
         </p>
 
         <div class="row g-2 mb-2">
@@ -327,7 +327,7 @@ export default defineComponent({
           </div>
         </div>
 
-        <div class="mb-3">
+        <div class="mb-1">
           <label class="form-label small" for="solar_refresh_token">Initial Refresh Token</label>
           <input type="password" class="form-control form-control-sm"
                  name="solar_refresh_token" id="solar_refresh_token"
@@ -340,22 +340,46 @@ export default defineComponent({
             you re-authorize from scratch.
           </div>
         </div>
+      </div>
 
-        <hr class="my-3" />
-
-        <div class="row g-2">
-          <div class="col-auto">
-            <label class="form-label small" for="solar_refresh_seconds">Refresh interval (seconds)</label>
-            <input type="number" class="form-control form-control-sm" style="width:8rem"
-                   name="solar_refresh_seconds" id="solar_refresh_seconds"
-                   v-model.number="store.config.solar_refresh_seconds" min="300" max="86400" />
+      <!-- Solar Live -->
+      <div v-show="activeThemes.includes('solar')" class="card mb-3 p-3">
+        <p class="section-heading"><i class="bi bi-lightning-charge-fill me-2"></i>Solar - Live Power</p>
+        <p class="text-muted small mb-2">
+          Shows current generation and consumption in Watts, plus today's cumulative total.
+        </p>
+        <div class="mb-1">
+          <label class="form-label small" for="solar_refresh_seconds">Refresh interval (seconds)</label>
+          <input type="number" class="form-control form-control-sm" style="max-width:140px"
+                 name="solar_refresh_seconds" id="solar_refresh_seconds"
+                 v-model.number="store.config.solar_refresh_seconds" min="300" max="86400" />
+          <div class="form-text text-muted small">
+            Your Envoy typically only reports every 5-15 minutes - polling much faster than that
+            won't get you fresher data, just more API calls against your rate limit.
           </div>
+        </div>
+      </div>
+
+      <!-- Solar History -->
+      <div v-show="activeThemes.includes('solar_history')" class="card mb-3 p-3">
+        <p class="section-heading"><i class="bi bi-bar-chart-fill me-2"></i>Solar - History</p>
+        <p class="text-muted small mb-2">
+          Shows a bar graph of daily usage vs. generation over the lookback window below.
+        </p>
+        <div class="row g-2">
           <div class="col-auto">
             <label class="form-label small" for="solar_lookback_days">Lookback window (days)</label>
             <input type="number" class="form-control form-control-sm" style="width:8rem"
                    name="solar_lookback_days" id="solar_lookback_days"
                    v-model.number="store.config.solar_lookback_days" min="1" max="16" />
             <div class="form-text text-muted small">Max 16 - limited by how many bars fit on the panel.</div>
+          </div>
+          <div class="col-auto">
+            <label class="form-label small" for="solar_history_refresh_seconds">Refresh interval (seconds)</label>
+            <input type="number" class="form-control form-control-sm" style="width:9rem"
+                   name="solar_history_refresh_seconds" id="solar_history_refresh_seconds"
+                   v-model.number="store.config.solar_history_refresh_seconds" min="300" max="86400" />
+            <div class="form-text text-muted small">Daily totals barely change intraday - hourly is plenty.</div>
           </div>
         </div>
       </div>

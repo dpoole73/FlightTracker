@@ -135,7 +135,7 @@ DEFAULT_IDLE_THEME_ROTATION_SECONDS = 15
 # All theme keys the rotator knows how to build. Kept as a constant (rather
 # than deriving from the registry) so validation doesn't need to import
 # scene code, avoiding a circular import from setup -> scenes -> setup.
-IDLE_THEME_CHOICES = ("classic", "forecast", "conditions", "stock", "solar")
+IDLE_THEME_CHOICES = ("classic", "forecast", "conditions", "stock", "solar", "solar_history")
  
 # Stock ticker idle theme
 DEFAULT_STOCK_API_KEY = ""
@@ -153,6 +153,9 @@ DEFAULT_SOLAR_SYSTEM_ID = ""
 DEFAULT_SOLAR_REFRESH_TOKEN = ""
 DEFAULT_SOLAR_REFRESH_SECONDS = 3600  # hourly, matches Enphase's own data granularity
 DEFAULT_SOLAR_LOOKBACK_DAYS = 14
+
+# Solar history theme
+DEFAULT_SOLAR_HISTORY_REFRESH_SECONDS = 3600  # daily totals barely change intraday
 
 # Web interface
 DEFAULT_WEB_INTERFACE_ENABLED = True
@@ -288,6 +291,7 @@ DEFAULTS: dict[str, Any] = {
     "solar_refresh_token": DEFAULT_SOLAR_REFRESH_TOKEN,
     "solar_refresh_seconds": DEFAULT_SOLAR_REFRESH_SECONDS,
     "solar_lookback_days": DEFAULT_SOLAR_LOOKBACK_DAYS,
+    "solar_history_refresh_seconds": DEFAULT_SOLAR_HISTORY_REFRESH_SECONDS,
  
     # Per-theme configuration (nested dict)
     "theme": DEFAULT_THEME,
@@ -1485,6 +1489,17 @@ class Config:
         # Clamped to what the panel can actually render (see MAX_POINTS in
         # solar_idle_theme.py: (screen.WIDTH // 2) // 2 = 16 for a 64px panel).
         return max(1, min(16, val))
+
+    @property
+    def solar_history_refresh_seconds(self) -> int:
+        val = self.data_store.get(
+            "solar_history_refresh_seconds", DEFAULT_SOLAR_HISTORY_REFRESH_SECONDS
+        )
+        try:
+            val = int(val)
+        except (TypeError, ValueError):
+            return DEFAULT_SOLAR_HISTORY_REFRESH_SECONDS
+        return max(300, val)
 
     @property
     def web_interface_enabled(self) -> bool:

@@ -674,6 +674,9 @@ def parse_settings_form(form, cfg) -> dict:
         "solar_lookback_days": max(
             1, min(16, int_val(form.get("solar_lookback_days"), 14))
         ),
+        "solar_history_refresh_seconds": max(
+            300, int_val(form.get("solar_history_refresh_seconds"), 3600)
+        ),
 
         # Web interface
         "web_interface_enabled": bool_val(form.get("web_interface_enabled")),

@@ -1,15 +1,14 @@
 """
-SolarIdleTheme - usage vs. generation bar graph, ported from the old
-standalone SolarScene mixin.
+SolarIdleTheme - live production and consumption side by side, plus
+today's cumulative production. Two-column layout echoes the original
+SolarScene's Used/Gen bar-graph columns, just with live numbers instead
+of history bars.
 
-Layout mirrors the original exactly (usage graph on the left half,
-generation on the right half, 2px per day), but:
-  - bar height is derived from screen.HEIGHT instead of a hardcoded 20,
-    so it adapts if display_scan_rate ever produces a taller panel
-  - point count is clamped to what actually fits the panel width, so a
-    misconfigured lookback window can't draw off-canvas
-  - uses panel.draw_square/draw_line/draw_text (the current RGBPanel
-    abstraction) instead of the old direct rgbmatrix graphics calls
+Consumption comes from SolarService's latest_telemetry parsing, which
+may be None if Enphase's response shape didn't match what we guessed
+(see _parse_latest_telemetry's docstring in solar_service.py) - handled
+here by showing "--" for that column rather than crashing or hiding the
+whole theme, since production+today are still valid either way.
 """
 
 from __future__ import annotations
@@ -19,76 +18,103 @@ from setup import colours, fonts, screen
 from setup.configuration import Config
 from utilities.solar_service import SolarService
 
-SOLAR_FONT = fonts.regular
+LABEL_FONT = fonts.regular  # "Gen"/"Use" - short enough to fit at this size
+VALUE_FONT = fonts.small  # 4px/char - "regular" (6px/char) overlapped between columns
 
-LABEL_Y = 9
-BAR_TOP_Y = 11
-BOTTOM_MARGIN = 1
-MAX_BAR_HEIGHT = max(4, screen.HEIGHT - BAR_TOP_Y - BOTTOM_MARGIN)
-
+GEN_X = 1
+GEN_Y = 10
 USE_X = 1
-GEN_X = screen.WIDTH // 2
-
-BAR_WIDTH_PER_POINT = 2
-MAX_POINTS = (screen.WIDTH // 2) // BAR_WIDTH_PER_POINT
-
+USE_Y = 20
+TODAY_X = 1
+TODAY_Y = 30
 
 class SolarIdleTheme(BaseIdleScene):
-    """Usage (red) vs. generation (green) bar graph over the lookback window."""
+    """Live generation vs. consumption , plus today's total generation."""
 
     def theme_init(self) -> None:
         self.solar = SolarService.instance()
         self.labels_drawn = False
+        self.last_gen_str: str | None = None
+        self.last_use_str: str | None = None
+        self.last_today_str: str | None = None
 
     def theme_reset(self) -> None:
         self.labels_drawn = False
+        self.last_gen_str = None
+        self.last_use_str = None
+        self.last_today_str = None
 
     def draw_content(self, count: int) -> None:
         cfg = Config.instance()
-        data = self.solar.get()
+        reading = self.solar.get()
 
-        # Full wipe each redraw (once/sec) - simplest way to avoid stale
-        # bars when the point count changes between fetches, and cheap
-        # enough at this refresh rate. Matches the original's approach.
-        self.panel.draw_square(self.canvas, 0, 0, screen.WIDTH, screen.HEIGHT, colours.BLACK)
-        self.labels_drawn = False
 
-        if data is None:
+        if reading is None:
             self._draw_waiting_state(cfg)
             return
 
-        usage = data["usage"][-MAX_POINTS:]
-        production = data["production"][-MAX_POINTS:]
-        max_value = max([*usage, *production, 1])  # avoid div-by-zero on all-zero data
+        gen_kw = reading["current_power_w"] / 1000.0
+        today_kwh = reading["energy_today_wh"] / 1000.0
+        use_w = reading["consumption_power_w"]
 
-        self._draw_labels()
-        self._draw_bars(USE_X, usage, max_value, colours.RED)
-        self._draw_bars(GEN_X, production, max_value, colours.GREEN)
+        self._draw_gen(f"{gen_kw:.2f}kW", colours.GREEN)
+        self._draw_use(
+            f"{use_w / 1000.0:.2f}kW" if use_w is not None else "--",
+            colours.RED
+        )
+        self._draw_today(f"{today_kwh:.1f}kWh")
 
     # ------------------------------------------------------------------
 
     def _draw_waiting_state(self, cfg) -> None:
-        self._draw_labels()
         text = (
             "NO AUTH"
             if not (cfg.solar_client_id and cfg.solar_client_secret and cfg.solar_api_key)
             else "..."
         )
-        self.panel.draw_text(self.canvas, SOLAR_FONT, USE_X, BAR_TOP_Y + 8, colours.WHITE, text)
+        self._draw_gen(text, colours.WHITE)
+        self._erase_use()
+        self._erase_today()
 
-    def _draw_labels(self) -> None:
-        if self.labels_drawn:
+    # ------------------------------------------------------------------
+    # Erase-then-redraw helpers - avoids flicker by only touching pixels
+    # that actually changed, matching StockIdleTheme's approach.
+    # ------------------------------------------------------------------
+
+    def _draw_gen(self, text: str, colour) -> None:
+        if self.last_gen_str == text:
             return
-        self.panel.draw_text(self.canvas, SOLAR_FONT, USE_X, LABEL_Y, colours.RED, "Used")
-        self.panel.draw_text(self.canvas, SOLAR_FONT, GEN_X, LABEL_Y, colours.GREEN, "Gen")
-        self.labels_drawn = True
+        if self.last_gen_str is not None:
+            self.panel.draw_text(
+                self.canvas, VALUE_FONT, GEN_X, GEN_Y, colours.BLACK, self.last_gen_str
+            )
+        self.panel.draw_text(self.canvas, VALUE_FONT, GEN_X, GEN_Y, colour, text)
+        self.last_gen_str = text
 
-    def _draw_bars(self, x0: int, values: list[float], max_value: float, colour) -> None:
-        for i, value in enumerate(values):
-            height = (value / max_value) * MAX_BAR_HEIGHT
-            top_y = int(round(BAR_TOP_Y + (MAX_BAR_HEIGHT - height)))
-            bottom_y = BAR_TOP_Y + MAX_BAR_HEIGHT
-            x = x0 + BAR_WIDTH_PER_POINT * i
-            # Two-pixel-wide bar, matching the original's paired DrawLine calls.
-            self.panel.draw_line(self.canvas, x, top_y, x, bottom_y, colour)
-            self.panel.draw_line(self.canvas, x + 1, top_y, x + 1, bottom_y, colour)
+    def _draw_use(self, text: str, colour) -> None:
+        if self.last_use_str == text:
+            return
+        self._erase_use()
+        self.panel.draw_text(self.canvas, VALUE_FONT, USE_X, USE_Y, colour, text)
+        self.last_use_str = text
+
+    def _erase_use(self) -> None:
+        if self.last_use_str is not None:
+            self.panel.draw_text(
+                self.canvas, VALUE_FONT, USE_X, USE_Y, colours.BLACK, self.last_use_str
+            )
+            self.last_use_str = None
+
+    def _draw_today(self, text: str) -> None:
+        if self.last_today_str == text:
+            return
+        self._erase_today()
+        self.panel.draw_text(self.canvas, VALUE_FONT, TODAY_X, TODAY_Y, colours.WHITE, text)
+        self.last_today_str = text
+
+    def _erase_today(self) -> None:
+        if self.last_today_str is not None:
+            self.panel.draw_text(
+                self.canvas, VALUE_FONT, TODAY_X, TODAY_Y, colours.BLACK, self.last_today_str
+            )
+            self.last_today_str = None
