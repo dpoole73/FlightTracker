@@ -641,7 +641,7 @@ def parse_settings_form(form, cfg) -> dict:
             )
         ),
        
-         # Idle screen rotation
+        # Idle screen rotation
         "idle_theme_order": [
             v
             for v in str_val(form.get("idle_theme_order"), "").split(",")
@@ -658,7 +658,14 @@ def parse_settings_form(form, cfg) -> dict:
             60, int_val(form.get("stock_refresh_seconds"), 300)
         ),
  
-        # Solar idle theme
+        # Solar - live (local Envoy)
+        "solar_local_host": str_val(form.get("solar_local_host"), cfg.solar_local_host),
+        "solar_local_token": str_val(form.get("solar_local_token"), cfg.solar_local_token),
+        "solar_refresh_seconds": max(
+            2, int_val(form.get("solar_refresh_seconds"), 10)
+        ),
+ 
+        # Solar - history (Enphase cloud account, shared with the fields below)
         "solar_client_id": str_val(form.get("solar_client_id"), cfg.solar_client_id),
         "solar_client_secret": str_val(
             form.get("solar_client_secret"), cfg.solar_client_secret
@@ -667,9 +674,6 @@ def parse_settings_form(form, cfg) -> dict:
         "solar_system_id": str_val(form.get("solar_system_id"), cfg.solar_system_id),
         "solar_refresh_token": str_val(
             form.get("solar_refresh_token"), cfg.solar_refresh_token
-        ),
-        "solar_refresh_seconds": max(
-            300, int_val(form.get("solar_refresh_seconds"), 3600)
         ),
         "solar_lookback_days": max(
             1, min(16, int_val(form.get("solar_lookback_days"), 14))

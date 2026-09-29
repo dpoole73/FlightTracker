@@ -1,37 +1,35 @@
 """
-SolarService - background OAuth + fetch for Enphase Enlighten data.
+SolarService - background fetch for Enphase solar data, from two sources:
 
-Serves two independent idle themes with two independent fetch cadences,
-sharing one bearer-token lifecycle:
-  - LIVE (get()): summary's current_power/energy_today + latest_telemetry's
-    live consumption, refreshed every cfg.solar_refresh_seconds. Powers
-    SolarIdleTheme ("solar").
-  - HISTORY (get_history()): consumption_lifetime/energy_lifetime daily
-    totals over cfg.solar_lookback_days, refreshed every
-    cfg.solar_history_refresh_seconds (much less often - daily totals
-    don't need minute-by-minute polling). Powers SolarHistoryIdleTheme
-    ("solar_history").
+  - LIVE (get()): the local Envoy's /production.json over the LAN
+    (https://<envoy-ip>/production.json, bearer token, self-signed cert),
+    refreshed every cfg.solar_refresh_seconds - no cloud rate limit, so
+    this can poll every few seconds. Powers SolarIdleTheme ("solar").
+  - HISTORY (get_history()): the Enphase Enlighten cloud API's
+    consumption_lifetime/energy_lifetime daily totals over
+    cfg.solar_lookback_days, refreshed every
+    cfg.solar_history_refresh_seconds (the local Envoy doesn't expose a
+    day-by-day breakdown, only lifetime-to-date and last-7-days totals).
+    Powers SolarHistoryIdleTheme ("solar_history").
 
-Both were originally one endpoint pair (the old utilities/solar.py's
-grab_solar_data()); split because "live" and "history" are now two
-separate idle themes, independently enabled/ordered like any other theme,
-rather than one scene trying to show both.
+LIVE and HISTORY use different auth entirely: the local Envoy token is a
+long-lived, pre-generated JWT (no refresh dance needed - see
+_fetch_live/cfg.solar_local_token), while HISTORY still uses the cloud
+OAuth refresh-token flow (_ensure_bearer_token), since only the cloud API
+has the daily-history endpoints.
 
-latest_telemetry returns per-channel (per phase/leg) readings under
-devices.meters, not a single total - _parse_latest_telemetry() sums the
-"consumption" channels, skipping any non-reporting (null) channel.
-Confirmed against a real API response; see that function's docstring.
+The local Envoy uses a self-signed certificate, so LIVE requests disable
+TLS verification (verify=False) - standard practice for this kind of
+local-network integration (e.g. Home Assistant's own Envoy integration
+does the same). InsecureRequestWarning is suppressed once at import time
+so this doesn't spam the logs on every poll.
 
-Same OAuth refresh-token flow, retry session, and DNS-error detection as
-the original - restructured as a singleton daemon thread (mirrors
-TLEManager/StockService) so draw_content() never blocks on a network call.
-
-Enphase rotates the refresh token on every use, so the current refresh
-token is persisted to disk (SOLAR_TOKEN_CACHE_PATH) rather than kept only
-in Config - otherwise a restart between refreshes would strand you on a
-stale, already-used token. The cache lives next to config.json (not a
-relative path in the repo), so it survives regardless of the working
-directory the app is launched from.
+Enphase's cloud API rotates the refresh token on every use, so the
+current refresh token is persisted to disk (SOLAR_TOKEN_CACHE_PATH)
+rather than kept only in Config - otherwise a restart between refreshes
+would strand you on a stale, already-used token. The cache lives next to
+config.json (not a relative path in the repo), so it survives regardless
+of the working directory the app is launched from.
 """
 
 from __future__ import annotations
@@ -43,12 +41,17 @@ import threading
 import time
 from datetime import datetime, timedelta
 
+import urllib3
 from requests import Session
 from requests.adapters import HTTPAdapter
 from requests.exceptions import RequestException
 from urllib3.util.retry import Retry
 
 from setup.configuration import CONFIG_PATH, Config
+
+# The local Envoy's cert is self-signed - suppress the per-request warning
+# requests/urllib3 would otherwise log for every verify=False call.
+urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 logger = logging.getLogger(__name__)
 
@@ -95,39 +98,47 @@ def _build_session() -> Session:
     return session
 
 
-def _parse_latest_telemetry(payload: dict) -> float | None:
+def _parse_production_json(payload: dict) -> tuple[float, float, float]:
     """
-    Extract live consumption power (Watts), summed across all reporting
-    channels.
+    Extract (production_w, consumption_w, production_today_wh) from the
+    local Envoy's /production.json.
 
-    Confirmed shape (from a real /latest_telemetry response):
-        {"devices": {"meters": [
-            {"name": "production", "channel": 1, "power": 843, ...},
-            {"name": "production", "channel": 2, "power": 842, ...},
-            {"name": "production", "channel": 3, "power": null, ...},
-            {"name": "consumption", "channel": 1, "power": 123, ...},
-            {"name": "consumption", "channel": 2, "power": 474, ...},
-            {"name": "consumption", "channel": 3, "power": null, ...},
-        ]}}
+    Confirmed shape (from a real local response):
+        {"production": [
+            {"type": "inverters", "wNow": 0, ...},
+            {"type": "eim", "measurementType": "production",
+             "wNow": 0.0, "whToday": 14660.189, ...},
+        ],
+        "consumption": [
+            {"type": "eim", "measurementType": "total-consumption",
+             "wNow": 691.253, "whToday": 17976.0, ...},
+            {"type": "eim", "measurementType": "net-consumption", ...},
+        ]}
 
-    Multi-channel because split-phase/3-phase systems report one reading
-    per leg - total system power is the sum across channels, with null
-    (non-reporting) channels excluded rather than treated as zero.
+    The "inverters" production entry reports per-panel/DC-side data and is
+    not the one we want; the "eim" (whole-home CT meter) entry with
+    measurementType "production" is the real AC production total.
 
-    Returns None only if the payload doesn't contain a "consumption"
-    meter at all (unexpected account/hardware shape), so the caller can
-    fall back gracefully and log the raw payload for a human to check.
+    Consumption has two "eim" entries: "total-consumption" (gross home
+    load, what the house is actually drawing) vs "net-consumption" (import
+    from/export to the grid, can go negative). "total-consumption" is used
+    here since "how much power is my house using" is what was asked for.
+
+    Raises KeyError/StopIteration (caught by the caller like any other
+    fetch failure) if either expected entry is missing, rather than
+    silently returning a wrong number.
     """
-    meters = payload.get("devices", {}).get("meters")
-    if isinstance(meters, list):
-        consumption_meters = [m for m in meters if m.get("name") == "consumption"]
-        if consumption_meters:
-            readings = [m["power"] for m in consumption_meters if m.get("power") is not None]
-            # Meters present but every channel currently null (e.g. between
-            # reports) is a legitimate, known reading of 0W, not "unknown".
-            return float(sum(readings)) if readings else 0.0
-
-    return None
+    production_entry = next(
+        p for p in payload["production"] if p.get("measurementType") == "production"
+    )
+    consumption_entry = next(
+        c for c in payload["consumption"] if c.get("measurementType") == "total-consumption"
+    )
+    return (
+        float(production_entry["wNow"]),
+        float(consumption_entry["wNow"]),
+        float(production_entry["whToday"]),
+    )
 
 
 class _FetchState:
@@ -287,96 +298,64 @@ class SolarService:
             cfg = Config.instance()
             now = time.time()
 
-            if not (cfg.solar_client_id and cfg.solar_client_secret and cfg.solar_api_key):
-                time.sleep(60)  # nothing configured yet - check back periodically
-                continue
+            if cfg.solar_local_host and cfg.solar_local_token:
+                if self.live_state.is_due(now, cfg.solar_refresh_seconds):
+                    self._fetch_live(cfg)
 
-            if self.live_state.is_due(now, cfg.solar_refresh_seconds):
-                self._fetch_live(cfg)
+            if cfg.solar_client_id and cfg.solar_client_secret and cfg.solar_api_key:
+                if self.history_state.is_due(now, cfg.solar_history_refresh_seconds):
+                    self._fetch_history(cfg)
 
-            if self.history_state.is_due(now, cfg.solar_history_refresh_seconds):
-                self._fetch_history(cfg)
-
-            time.sleep(30)  # check periodically; each fetch respects its own interval
+            # Live polling can now be as fast as a few seconds (local
+            # network, no rate limit) - check often enough that the
+            # configured interval is actually honored rather than only
+            # checked once every 30s as before.
+            time.sleep(1)
 
     # ------------------------------------------------------------------
-    # Live fetch: summary (current_power, energy_today) + latest_telemetry
-    # (consumption_power, non-fatal if it fails or doesn't parse).
+    # Live fetch: local Envoy's /production.json over the LAN. No OAuth -
+    # just a long-lived bearer token generated once (e.g. via Postman) -
+    # and no rate limit, so this can poll as often as cfg.solar_refresh_seconds
+    # allows.
     # ------------------------------------------------------------------
 
     def _fetch_live(self, cfg) -> None:
         try:
-            self._ensure_bearer_token(cfg)
-
-            headers = {"Authorization": f"Bearer {self.bearer_token}"}
-            params = {"key": cfg.solar_api_key}
-
             response = self.session.get(
-                f"{API_BASE}/{cfg.solar_system_id}/summary",
-                headers=headers,
-                params=params,
-                timeout=(5, 20),
+                f"https://{cfg.solar_local_host}/production.json",
+                headers={"Authorization": f"Bearer {cfg.solar_local_token}"},
+                timeout=(3, 10),  # local network - fail fast rather than hang
+                verify=False,  # self-signed cert on the local Envoy
             )
-            if response.status_code == 429:
-                raise RuntimeError("rate limited fetching summary")
             response.raise_for_status()
-            payload = response.json()
+            production_w, consumption_w, today_wh = _parse_production_json(response.json())
 
-            # Both are required fields on the summary endpoint - a KeyError
-            # here is treated the same as any other fetch failure (caught
-            # below), rather than silently displaying stale/wrong data.
-            current_power_w = float(payload["current_power"])
-            energy_today_wh = float(payload["energy_today"])
-
-            # Live consumption isn't on the summary endpoint - fetch it
-            # separately. Failure here is non-fatal: production/today's
-            # totals are still valid and worth keeping either way.
-            consumption_power_w = None
-            try:
-                telemetry_resp = self.session.get(
-                    f"{API_BASE}/{cfg.solar_system_id}/latest_telemetry",
-                    headers=headers,
-                    params=params,
-                    timeout=(5, 20),
-                )
-                if telemetry_resp.status_code == 429:
-                    logger.warning("Solar API: rate limited fetching latest_telemetry")
-                else:
-                    telemetry_resp.raise_for_status()
-                    consumption_power_w = _parse_latest_telemetry(telemetry_resp.json())
-                    if consumption_power_w is None:
-                        logger.warning(
-                            "Solar API: latest_telemetry shape not recognised - "
-                            "raw payload: %s",
-                            telemetry_resp.text[:500],
-                        )
-            except (RequestException, ValueError) as exc:
-                logger.warning("Solar API: latest_telemetry fetch failed: %s", exc)
-
-        except (RequestException, ValueError, RuntimeError, KeyError) as exc:
-            rate_limited = "rate limited" in str(exc)
+        except (RequestException, ValueError, KeyError, StopIteration) as exc:
             with self.lock:
-                backoff = self.live_state.record_failure(rate_limited)
+                backoff = self.live_state.record_failure(rate_limited=False)
 
             if is_dns_error(exc):
-                logger.error("Solar API (live): DNS failure resolving host - will retry")
+                logger.error(
+                    "Solar local API: could not resolve %s - will retry",
+                    cfg.solar_local_host,
+                )
             else:
                 logger.error(
-                    "Solar API (live) fetch failed: %s - retrying in %.0fs", exc, backoff
+                    "Solar local API fetch failed: %s - retrying in %.0fs", exc, backoff
                 )
             return
 
         with self.lock:
-            self.current_power_w = current_power_w
-            self.consumption_power_w = consumption_power_w
-            self.energy_today_wh = energy_today_wh
+            self.current_power_w = production_w
+            self.consumption_power_w = consumption_w
+            self.energy_today_wh = today_wh
             self.live_state.record_success()
 
         logger.info(
-            "Solar live reading updated: %.0fW producing, %s consuming, %.2fkWh today",
-            current_power_w,
-            f"{consumption_power_w:.0f}W" if consumption_power_w is not None else "?",
-            energy_today_wh / 1000.0,
+            "Solar live reading updated: %.0fW producing, %.0fW consuming, %.2fkWh today",
+            production_w,
+            consumption_w,
+            today_wh / 1000.0,
         )
 
     # ------------------------------------------------------------------

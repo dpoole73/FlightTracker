@@ -284,13 +284,14 @@ export default defineComponent({
       </div>
     </div>
 
-    <!-- ====== Solar (shared auth) + Solar Live + Solar History ====== -->
+    <!-- ====== Solar Live (local) + Solar History (cloud, needs account) ====== -->
     <div v-show="activeThemes.includes('solar') || activeThemes.includes('solar_history')">
-      <div class="card mb-3 p-3">
+      <div v-show="activeThemes.includes('solar_history')" class="card mb-3 p-3">
         <p class="section-heading"><i class="bi bi-sun me-2"></i>Solar - Enphase Account</p>
         <p class="text-muted small mb-2">
-          Shared by both solar screens below. Requires a one-time OAuth setup outside this
-          app (see the project README) to obtain the initial refresh token.
+          Used by the History screen below (daily totals aren't available locally). Requires
+          a one-time OAuth setup outside this app (see the project README) to obtain the
+          initial refresh token.
         </p>
 
         <div class="row g-2 mb-2">
@@ -346,16 +347,36 @@ export default defineComponent({
       <div v-show="activeThemes.includes('solar')" class="card mb-3 p-3">
         <p class="section-heading"><i class="bi bi-lightning-charge-fill me-2"></i>Solar - Live Power</p>
         <p class="text-muted small mb-2">
-          Shows current generation and consumption in Watts, plus today's cumulative total.
+          Shows current generation and consumption in Watts, plus today's cumulative total -
+          read directly from your Envoy on the local network (not the Enphase cloud, so no
+          rate limit). Uses its own token below, separate from the Enphase account details
+          above.
         </p>
+
+        <div class="row g-2 mb-2">
+          <div class="col-12 col-sm-6">
+            <label class="form-label small" for="solar_local_host">Envoy Address</label>
+            <input type="text" class="form-control form-control-sm"
+                   name="solar_local_host" id="solar_local_host"
+                   v-model="store.config.solar_local_host"
+                   placeholder="e.g. 192.168.4.72" autocomplete="off" />
+          </div>
+          <div class="col-12 col-sm-6">
+            <label class="form-label small" for="solar_local_token">Local Access Token</label>
+            <input type="password" class="form-control form-control-sm"
+                   name="solar_local_token" id="solar_local_token"
+                   v-model="store.config.solar_local_token"
+                   placeholder="Long-lived local token" autocomplete="new-password" />
+          </div>
+        </div>
+
         <div class="mb-1">
           <label class="form-label small" for="solar_refresh_seconds">Refresh interval (seconds)</label>
           <input type="number" class="form-control form-control-sm" style="max-width:140px"
                  name="solar_refresh_seconds" id="solar_refresh_seconds"
-                 v-model.number="store.config.solar_refresh_seconds" min="300" max="86400" />
+                 v-model.number="store.config.solar_refresh_seconds" min="2" max="86400" />
           <div class="form-text text-muted small">
-            Your Envoy typically only reports every 5-15 minutes - polling much faster than that
-            won't get you fresher data, just more API calls against your rate limit.
+            No rate limit on the local network - a few seconds is fine.
           </div>
         </div>
       </div>

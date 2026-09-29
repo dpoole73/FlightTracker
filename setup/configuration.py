@@ -151,8 +151,11 @@ DEFAULT_SOLAR_SYSTEM_ID = ""
 # run. After that, SolarService reads/writes the rotating token from the
 # cache file next to config.json, not from here.
 DEFAULT_SOLAR_REFRESH_TOKEN = ""
-DEFAULT_SOLAR_REFRESH_SECONDS = 3600  # hourly, matches Enphase's own data granularity
+DEFAULT_SOLAR_REFRESH_SECONDS = 30  # we can make much more frequent calls on local network (not api throttling)
 DEFAULT_SOLAR_LOOKBACK_DAYS = 14
+
+DEFAULT_SOLAR_LOCAL_HOST = ""   # e.g. "192.168.4.72" - your Envoy's LAN IP
+DEFAULT_SOLAR_LOCAL_TOKEN = ""  # long-lived local access token (from Postman/Enlighten)
 
 # Solar history theme
 DEFAULT_SOLAR_HISTORY_REFRESH_SECONDS = 3600  # daily totals barely change intraday
@@ -292,6 +295,8 @@ DEFAULTS: dict[str, Any] = {
     "solar_refresh_seconds": DEFAULT_SOLAR_REFRESH_SECONDS,
     "solar_lookback_days": DEFAULT_SOLAR_LOOKBACK_DAYS,
     "solar_history_refresh_seconds": DEFAULT_SOLAR_HISTORY_REFRESH_SECONDS,
+    "solar_local_host": DEFAULT_SOLAR_LOCAL_HOST,
+    "solar_local_token": DEFAULT_SOLAR_LOCAL_TOKEN,
  
     # Per-theme configuration (nested dict)
     "theme": DEFAULT_THEME,
@@ -1477,7 +1482,7 @@ class Config:
             val = int(val)
         except (TypeError, ValueError):
             return DEFAULT_SOLAR_REFRESH_SECONDS
-        return max(300, val)  # don't allow sub-5-minute polling against a rate-limited API
+        return max(2, val)  # not rate limited
  
     @property
     def solar_lookback_days(self) -> int:
@@ -1500,6 +1505,17 @@ class Config:
         except (TypeError, ValueError):
             return DEFAULT_SOLAR_HISTORY_REFRESH_SECONDS
         return max(300, val)
+
+    @property
+    def solar_local_host(self) -> str:
+        # Strip an accidentally-pasted scheme/path - just the host[:port].
+        val = str(self.data_store.get("solar_local_host", DEFAULT_SOLAR_LOCAL_HOST)).strip()
+        val = val.removeprefix("https://").removeprefix("http://")
+        return val.split("/")[0]
+ 
+    @property
+    def solar_local_token(self) -> str:
+        return str(self.data_store.get("solar_local_token", DEFAULT_SOLAR_LOCAL_TOKEN))
 
     @property
     def web_interface_enabled(self) -> bool:
