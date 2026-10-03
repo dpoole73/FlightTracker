@@ -135,8 +135,7 @@ DEFAULT_IDLE_THEME_ROTATION_SECONDS = 15
 # All theme keys the rotator knows how to build. Kept as a constant (rather
 # than deriving from the registry) so validation doesn't need to import
 # scene code, avoiding a circular import from setup -> scenes -> setup.
-IDLE_THEME_CHOICES = ("classic", "forecast", "conditions", "stock", "solar", "solar_history")
- 
+IDLE_THEME_CHOICES = ("classic", "forecast", "conditions", "stock", "solar", "solar_history", "solar_intraday") 
 # Stock ticker idle theme
 DEFAULT_STOCK_API_KEY = ""
 DEFAULT_STOCK_SYMBOL = "MSFT"

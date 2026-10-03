@@ -13,6 +13,7 @@ const THEME_META = {
   stock: { label: "Stock Ticker", icon: "bi-graph-up-arrow" },
   solar: { label: "Solar Panel", icon: "bi-sun" },
   solar_history: { label: "Solar History", icon: "bi-bar-chart-fill" },
+  solar_intraday: { label: "Solar Today", icon: "bi-bar-chart-line" },
 };
 
 export default defineComponent({
@@ -285,7 +286,7 @@ export default defineComponent({
     </div>
 
     <!-- ====== Solar Live (local) + Solar History (cloud, needs account) ====== -->
-    <div v-show="activeThemes.includes('solar') || activeThemes.includes('solar_history')">
+    <div v-show="activeThemes.includes('solar') || activeThemes.includes('solar_intraday') || activeThemes.includes('solar_history')">
       <div v-show="activeThemes.includes('solar_history')" class="card mb-3 p-3">
         <p class="section-heading"><i class="bi bi-sun me-2"></i>Solar - Enphase Account</p>
         <p class="text-muted small mb-2">
@@ -344,13 +345,12 @@ export default defineComponent({
       </div>
 
       <!-- Solar Live -->
-      <div v-show="activeThemes.includes('solar')" class="card mb-3 p-3">
+      <div v-show="activeThemes.includes('solar') || activeThemes.includes('solar_intraday')" class="card mb-3 p-3">
         <p class="section-heading"><i class="bi bi-lightning-charge-fill me-2"></i>Solar - Live Power</p>
         <p class="text-muted small mb-2">
-          Shows current generation and consumption in Watts, plus today's cumulative total -
-          read directly from your Envoy on the local network (not the Enphase cloud, so no
-          rate limit). Uses its own token below, separate from the Enphase account details
-          above.
+          Shared by the Live Power and Solar Today screens below - both read directly from
+          your Envoy on the local network (not the Enphase cloud, so no rate limit). Uses its
+          own token here, separate from the Enphase account details above.
         </p>
 
         <div class="row g-2 mb-2">

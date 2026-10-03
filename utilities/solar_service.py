@@ -59,6 +59,15 @@ TOKEN_URL = "https://api.enphaseenergy.com/oauth/token"
 API_BASE = "https://api.enphaseenergy.com/api/v4/systems"
 
 SOLAR_TOKEN_CACHE_PATH = CONFIG_PATH.parent / "solar_token_cache.json"
+SOLAR_INTRADAY_CACHE_PATH = CONFIG_PATH.parent / "solar_intraday_cache.json"
+
+INTRADAY_BUCKETS = 48  # half-hourly for one day
+INTRADAY_BUCKET_MINUTES = 24 * 60 // INTRADAY_BUCKETS  # 30
+
+# How often the intraday cache is written to disk at most, outside of a
+# bucket boundary or day rollover (which always save immediately). Keeps
+# SD-card writes down to roughly once a minute rather than once per poll.
+INTRADAY_SAVE_INTERVAL_SECONDS = 60
 
 BEARER_TOKEN_TTL = timedelta(days=1)
 BEARER_TOKEN_REFRESH_MARGIN = timedelta(minutes=10)
@@ -98,10 +107,10 @@ def _build_session() -> Session:
     return session
 
 
-def _parse_production_json(payload: dict) -> tuple[float, float, float]:
+def _parse_production_json(payload: dict) -> tuple[float, float, float, float]:
     """
-    Extract (production_w, consumption_w, production_today_wh) from the
-    local Envoy's /production.json.
+    Extract (production_w, consumption_w, production_today_wh,
+    consumption_today_wh) from the local Envoy's /production.json.
 
     Confirmed shape (from a real local response):
         {"production": [
@@ -124,6 +133,9 @@ def _parse_production_json(payload: dict) -> tuple[float, float, float]:
     from/export to the grid, can go negative). "total-consumption" is used
     here since "how much power is my house using" is what was asked for.
 
+    whToday on each entry resets to ~0 at local midnight - that's what
+    _update_intraday() relies on to build the half-hourly history below.
+
     Raises KeyError/StopIteration (caught by the caller like any other
     fetch failure) if either expected entry is missing, rather than
     silently returning a wrong number.
@@ -138,6 +150,7 @@ def _parse_production_json(payload: dict) -> tuple[float, float, float]:
         float(production_entry["wNow"]),
         float(consumption_entry["wNow"]),
         float(production_entry["whToday"]),
+        float(consumption_entry["whToday"]),
     )
 
 
@@ -200,6 +213,18 @@ class SolarService:
         self.production: list[float] = []
         self.history_state = _FetchState()
 
+        # Intraday (half-hourly production/consumption, built locally from
+        # whToday deltas - see _update_intraday()). Loaded from disk so a
+        # restart partway through the day doesn't lose today's progress.
+        self.intraday_date: str | None = None
+        self.intraday_production_wh: list[float] = [0.0] * INTRADAY_BUCKETS
+        self.intraday_consumption_wh: list[float] = [0.0] * INTRADAY_BUCKETS
+        self.intraday_last_production_wh_today: float | None = None
+        self.intraday_last_consumption_wh_today: float | None = None
+        self.intraday_last_bucket_index: int | None = None
+        self.intraday_last_saved_at: float = 0.0
+        self._load_intraday_cache()
+
     def start(self) -> None:
         threading.Thread(
             target=self.run_loop, daemon=True, name="solar-service"
@@ -227,6 +252,18 @@ class SolarService:
                 return None
             return {"usage": list(self.usage), "production": list(self.production)}
 
+    def get_intraday(self) -> dict | None:
+        """Non-blocking: today's half-hourly production/consumption so far
+        (built locally from live whToday deltas, not an API call), or None
+        before the first live reading of the day has come in."""
+        with self.lock:
+            if self.intraday_date is None:
+                return None
+            return {
+                "production_wh": list(self.intraday_production_wh),
+                "consumption_wh": list(self.intraday_consumption_wh),
+            }
+
     def invalidate(self) -> None:
         with self.lock:
             self.live_state = _FetchState()
@@ -253,6 +290,96 @@ class SolarService:
             SOLAR_TOKEN_CACHE_PATH.write_text(json.dumps({"refresh_token": token}))
         except Exception as exc:
             logger.warning("Solar token cache write failed: %s", exc)
+
+    # ------------------------------------------------------------------
+    # Intraday half-hourly buckets, built locally from whToday deltas.
+    # ------------------------------------------------------------------
+
+    def _load_intraday_cache(self) -> None:
+        try:
+            data = json.loads(SOLAR_INTRADAY_CACHE_PATH.read_text())
+            # Only resume if the cache is from today - a stale cache from a
+            # previous day (e.g. the Pi was off overnight) should start
+            # fresh, not carry yesterday's bars into today's graph.
+            if data.get("date") == datetime.now().strftime("%Y-%m-%d"):
+                self.intraday_date = data["date"]
+                self.intraday_production_wh = list(data["production_wh"])
+                self.intraday_consumption_wh = list(data["consumption_wh"])
+                self.intraday_last_production_wh_today = data.get("last_production_wh_today")
+                self.intraday_last_consumption_wh_today = data.get("last_consumption_wh_today")
+                self.intraday_last_bucket_index = data.get("last_bucket_index")
+        except Exception:
+            pass  # no cache yet, or unreadable/corrupt - start fresh
+
+    def _save_intraday_cache_locked(self) -> None:
+        """Caller must already hold self.lock."""
+        try:
+            SOLAR_INTRADAY_CACHE_PATH.write_text(
+                json.dumps(
+                    {
+                        "date": self.intraday_date,
+                        "production_wh": self.intraday_production_wh,
+                        "consumption_wh": self.intraday_consumption_wh,
+                        "last_production_wh_today": self.intraday_last_production_wh_today,
+                        "last_consumption_wh_today": self.intraday_last_consumption_wh_today,
+                        "last_bucket_index": self.intraday_last_bucket_index,
+                    }
+                )
+            )
+        except Exception as exc:
+            logger.warning("Solar intraday cache write failed: %s", exc)
+
+    def _update_intraday(self, production_today_wh: float, consumption_today_wh: float) -> None:
+        """
+        Accumulate today's half-hourly production/consumption from the
+        cumulative whToday counters. Called after every successful live
+        fetch - the delta since the last call is added to whichever
+        half-hour bucket "now" falls into.
+
+        A delta spanning a bucket boundary (e.g. a reading at 1:59:55 then
+        the next at 2:00:05) is simply attributed entirely to the new
+        bucket - with polling every few seconds this is negligible, and
+        far simpler than splitting a delta proportionally across a
+        boundary for a display that's only ever showing rounded Wh anyway.
+        """
+        now = datetime.now()
+        today_str = now.strftime("%Y-%m-%d")
+        bucket_index = (now.hour * 60 + now.minute) // INTRADAY_BUCKET_MINUTES
+
+        with self.lock:
+            is_new_day = self.intraday_date != today_str
+            bucket_changed = (not is_new_day) and (bucket_index != self.intraday_last_bucket_index)
+
+            if is_new_day:
+                # First reading ever, or the day has rolled over (whToday
+                # itself resets to ~0 on the Envoy at local midnight too).
+                self.intraday_date = today_str
+                self.intraday_production_wh = [0.0] * INTRADAY_BUCKETS
+                self.intraday_consumption_wh = [0.0] * INTRADAY_BUCKETS
+            else:
+                prod_delta = production_today_wh - self.intraday_last_production_wh_today
+                cons_delta = consumption_today_wh - self.intraday_last_consumption_wh_today
+                # A negative delta without a date change means the Envoy's
+                # counter reset underneath us (e.g. it rebooted) - drop
+                # this cycle's delta rather than corrupting a bucket with
+                # a negative value.
+                if prod_delta >= 0:
+                    self.intraday_production_wh[bucket_index] += prod_delta
+                if cons_delta >= 0:
+                    self.intraday_consumption_wh[bucket_index] += cons_delta
+
+            self.intraday_last_production_wh_today = production_today_wh
+            self.intraday_last_consumption_wh_today = consumption_today_wh
+            self.intraday_last_bucket_index = bucket_index
+
+            due_to_save = (
+                is_new_day
+                or bucket_changed
+                or (time.time() - self.intraday_last_saved_at) >= INTRADAY_SAVE_INTERVAL_SECONDS
+            )
+            if due_to_save:
+                self._save_intraday_cache_locked()
+                self.intraday_last_saved_at = time.time()
 
     def _ensure_bearer_token(self, cfg) -> None:
         with self.lock:
@@ -328,7 +455,9 @@ class SolarService:
                 verify=False,  # self-signed cert on the local Envoy
             )
             response.raise_for_status()
-            production_w, consumption_w, today_wh = _parse_production_json(response.json())
+            production_w, consumption_w, today_wh, consumption_today_wh = _parse_production_json(
+                response.json()
+            )
 
         except (RequestException, ValueError, KeyError, StopIteration) as exc:
             with self.lock:
@@ -350,6 +479,8 @@ class SolarService:
             self.consumption_power_w = consumption_w
             self.energy_today_wh = today_wh
             self.live_state.record_success()
+
+        self._update_intraday(today_wh, consumption_today_wh)
 
         logger.info(
             "Solar live reading updated: %.0fW producing, %.0fW consuming, %.2fkWh today",

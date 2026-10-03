@@ -116,6 +116,7 @@ def _load_themes() -> dict:
     from scenes.idle.themes.forecast_idle_theme import ForecastIdleTheme
     from scenes.idle.themes.solar_history_idle_theme import SolarHistoryIdleTheme
     from scenes.idle.themes.solar_idle_theme import SolarIdleTheme
+    from scenes.idle.themes.solar_intraday_idle_theme import SolarIntradayIdleTheme
     from scenes.idle.themes.stock_idle_theme import StockIdleTheme
 
     return {
@@ -125,6 +126,7 @@ def _load_themes() -> dict:
         "stock": StockIdleTheme,
         "solar": SolarIdleTheme,
         "solar_history": SolarHistoryIdleTheme,
+        "solar_intraday": SolarIntradayIdleTheme,
     }
 
 
