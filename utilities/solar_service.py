@@ -18,6 +18,20 @@ _fetch_live/cfg.solar_local_token), while HISTORY still uses the cloud
 OAuth refresh-token flow (_ensure_bearer_token), since only the cloud API
 has the daily-history endpoints.
 
+Both "today's total" (get()) and the half-hourly intraday graph
+(get_intraday()) are derived from the same whLifetime counters - a
+genuinely cumulative meter that only ever counts up, captures every bit
+of energy exactly regardless of polling gaps, and (unlike whToday on this
+Envoy's firmware) isn't affected by the bug where whToday can erroneously
+equal whLifetime. "Today's total" subtracts the whLifetime value captured
+at the first reading of the day (_fetch_live's daily baseline); the
+intraday graph adds the delta between consecutive polls to whichever
+half-hour bucket "now" falls into (_update_intraday). An earlier version
+of the intraday graph instead integrated wNow (instantaneous power) over
+elapsed time - dropped in favor of whLifetime deltas, since a power
+sample can miss real variation between polls in a way a true energy
+counter's delta never does.
+
 The local Envoy uses a self-signed certificate, so LIVE requests disable
 TLS verification (verify=False) - standard practice for this kind of
 local-network integration (e.g. Home Assistant's own Envoy integration
@@ -60,6 +74,7 @@ API_BASE = "https://api.enphaseenergy.com/api/v4/systems"
 
 SOLAR_TOKEN_CACHE_PATH = CONFIG_PATH.parent / "solar_token_cache.json"
 SOLAR_INTRADAY_CACHE_PATH = CONFIG_PATH.parent / "solar_intraday_cache.json"
+SOLAR_DAILY_BASELINE_CACHE_PATH = CONFIG_PATH.parent / "solar_daily_baseline_cache.json"
 
 INTRADAY_BUCKETS = 48  # half-hourly for one day
 INTRADAY_BUCKET_MINUTES = 24 * 60 // INTRADAY_BUCKETS  # 30
@@ -109,18 +124,18 @@ def _build_session() -> Session:
 
 def _parse_production_json(payload: dict) -> tuple[float, float, float, float]:
     """
-    Extract (production_w, consumption_w, production_today_wh,
-    consumption_today_wh) from the local Envoy's /production.json.
+    Extract (production_w, consumption_w, production_wh_lifetime,
+    consumption_wh_lifetime) from the local Envoy's /production.json.
 
     Confirmed shape (from a real local response):
         {"production": [
             {"type": "inverters", "wNow": 0, ...},
             {"type": "eim", "measurementType": "production",
-             "wNow": 0.0, "whToday": 14660.189, ...},
+             "wNow": 0.0, "whLifetime": 30370530.575, ...},
         ],
         "consumption": [
             {"type": "eim", "measurementType": "total-consumption",
-             "wNow": 691.253, "whToday": 17976.0, ...},
+             "wNow": 691.253, "whLifetime": 88511730.898, ...},
             {"type": "eim", "measurementType": "net-consumption", ...},
         ]}
 
@@ -133,8 +148,12 @@ def _parse_production_json(payload: dict) -> tuple[float, float, float, float]:
     from/export to the grid, can go negative). "total-consumption" is used
     here since "how much power is my house using" is what was asked for.
 
-    whToday on each entry resets to ~0 at local midnight - that's what
-    _update_intraday() relies on to build the half-hourly history below.
+    whLifetime (not whToday) is deliberately used here: this Envoy's
+    firmware has a known bug where whToday can erroneously equal
+    whLifetime. whLifetime itself only ever counts up, so _fetch_live()
+    computes "today's" energy as the current whLifetime minus the
+    whLifetime captured at the first reading of the day (the daily
+    baseline), rather than trusting the Envoy's own "today" field.
 
     Raises KeyError/StopIteration (caught by the caller like any other
     fetch failure) if either expected entry is missing, rather than
@@ -149,8 +168,8 @@ def _parse_production_json(payload: dict) -> tuple[float, float, float, float]:
     return (
         float(production_entry["wNow"]),
         float(consumption_entry["wNow"]),
-        float(production_entry["whToday"]),
-        float(consumption_entry["whToday"]),
+        float(production_entry["whLifetime"]),
+        float(consumption_entry["whLifetime"]),
     )
 
 
@@ -206,7 +225,20 @@ class SolarService:
         self.current_power_w: float | None = None
         self.consumption_power_w: float | None = None
         self.energy_today_wh: float | None = None
+        self.consumption_energy_today_wh: float | None = None
         self.live_state = _FetchState()
+
+        # Daily "today" totals, computed as whLifetime minus the whLifetime
+        # captured at the first reading of the day - works around a known
+        # Envoy firmware bug where whToday can erroneously equal whLifetime.
+        # Persisted so a restart partway through the day keeps using the
+        # SAME baseline (captured at the actual start of day), rather than
+        # re-baselining to the restart moment and losing everything counted
+        # before it.
+        self.daily_baseline_date: str | None = None
+        self.daily_production_wh_baseline: float | None = None
+        self.daily_consumption_wh_baseline: float | None = None
+        self._load_daily_baseline_cache()
 
         # History (consumption_lifetime + energy_lifetime)
         self.usage: list[float] = []
@@ -214,13 +246,14 @@ class SolarService:
         self.history_state = _FetchState()
 
         # Intraday (half-hourly production/consumption, built locally from
-        # whToday deltas - see _update_intraday()). Loaded from disk so a
-        # restart partway through the day doesn't lose today's progress.
+        # whLifetime deltas between consecutive polls - see
+        # _update_intraday()). Loaded from disk so a restart partway
+        # through the day doesn't lose progress.
         self.intraday_date: str | None = None
         self.intraday_production_wh: list[float] = [0.0] * INTRADAY_BUCKETS
         self.intraday_consumption_wh: list[float] = [0.0] * INTRADAY_BUCKETS
-        self.intraday_last_production_wh_today: float | None = None
-        self.intraday_last_consumption_wh_today: float | None = None
+        self.intraday_last_production_wh_lifetime: float | None = None
+        self.intraday_last_consumption_wh_lifetime: float | None = None
         self.intraday_last_bucket_index: int | None = None
         self.intraday_last_saved_at: float = 0.0
         self._load_intraday_cache()
@@ -242,6 +275,7 @@ class SolarService:
                 "current_power_w": self.current_power_w,
                 "consumption_power_w": self.consumption_power_w,
                 "energy_today_wh": self.energy_today_wh,
+                "consumption_energy_today_wh": self.consumption_energy_today_wh,
             }
 
     def get_history(self) -> dict | None:
@@ -254,8 +288,9 @@ class SolarService:
 
     def get_intraday(self) -> dict | None:
         """Non-blocking: today's half-hourly production/consumption so far
-        (built locally from live whToday deltas, not an API call), or None
-        before the first live reading of the day has come in."""
+        (built locally from whLifetime deltas between polls, not an API
+        call), or None before the first live reading of the day has come
+        in."""
         with self.lock:
             if self.intraday_date is None:
                 return None
@@ -292,7 +327,42 @@ class SolarService:
             logger.warning("Solar token cache write failed: %s", exc)
 
     # ------------------------------------------------------------------
-    # Intraday half-hourly buckets, built locally from whToday deltas.
+    # Daily lifetime baseline - "today" = current whLifetime minus the
+    # whLifetime captured at the first reading of the day.
+    # ------------------------------------------------------------------
+
+    def _load_daily_baseline_cache(self) -> None:
+        try:
+            data = json.loads(SOLAR_DAILY_BASELINE_CACHE_PATH.read_text())
+            # Only resume if the cache is from today - a stale baseline
+            # from a previous day would make "today" look like it includes
+            # yesterday's energy too.
+            if data.get("date") == datetime.now().strftime("%Y-%m-%d"):
+                self.daily_baseline_date = data["date"]
+                self.daily_production_wh_baseline = data["production_wh_baseline"]
+                self.daily_consumption_wh_baseline = data["consumption_wh_baseline"]
+        except Exception:
+            pass  # no cache yet, or unreadable/corrupt/stale - re-baseline on next fetch
+
+    def _save_daily_baseline_cache_locked(self) -> None:
+        """Caller must already hold self.lock."""
+        try:
+            SOLAR_DAILY_BASELINE_CACHE_PATH.write_text(
+                json.dumps(
+                    {
+                        "date": self.daily_baseline_date,
+                        "production_wh_baseline": self.daily_production_wh_baseline,
+                        "consumption_wh_baseline": self.daily_consumption_wh_baseline,
+                    }
+                )
+            )
+        except Exception as exc:
+            logger.warning("Solar daily-baseline cache write failed: %s", exc)
+
+    # ------------------------------------------------------------------
+    # Intraday half-hourly buckets, built locally from whLifetime deltas
+    # between consecutive polls (NOT whToday, and NOT wNow integration -
+    # see module docstring and _update_intraday()'s docstring for why).
     # ------------------------------------------------------------------
 
     def _load_intraday_cache(self) -> None:
@@ -305,9 +375,19 @@ class SolarService:
                 self.intraday_date = data["date"]
                 self.intraday_production_wh = list(data["production_wh"])
                 self.intraday_consumption_wh = list(data["consumption_wh"])
-                self.intraday_last_production_wh_today = data.get("last_production_wh_today")
-                self.intraday_last_consumption_wh_today = data.get("last_consumption_wh_today")
+                self.intraday_last_production_wh_lifetime = data.get(
+                    "last_production_wh_lifetime"
+                )
+                self.intraday_last_consumption_wh_lifetime = data.get(
+                    "last_consumption_wh_lifetime"
+                )
                 self.intraday_last_bucket_index = data.get("last_bucket_index")
+                # Restoring the pre-restart whLifetime values (rather than
+                # discarding them like the old wNow-based version did) is
+                # exactly right here: the next poll's delta against them
+                # will correctly capture all the energy produced/consumed
+                # during the downtime - a whLifetime delta is accurate
+                # across any gap length, unlike a wNow sample.
         except Exception:
             pass  # no cache yet, or unreadable/corrupt - start fresh
 
@@ -320,8 +400,8 @@ class SolarService:
                         "date": self.intraday_date,
                         "production_wh": self.intraday_production_wh,
                         "consumption_wh": self.intraday_consumption_wh,
-                        "last_production_wh_today": self.intraday_last_production_wh_today,
-                        "last_consumption_wh_today": self.intraday_last_consumption_wh_today,
+                        "last_production_wh_lifetime": self.intraday_last_production_wh_lifetime,
+                        "last_consumption_wh_lifetime": self.intraday_last_consumption_wh_lifetime,
                         "last_bucket_index": self.intraday_last_bucket_index,
                     }
                 )
@@ -329,18 +409,37 @@ class SolarService:
         except Exception as exc:
             logger.warning("Solar intraday cache write failed: %s", exc)
 
-    def _update_intraday(self, production_today_wh: float, consumption_today_wh: float) -> None:
+    def _update_intraday(self, production_wh_lifetime: float, consumption_wh_lifetime: float) -> None:
         """
         Accumulate today's half-hourly production/consumption from the
-        cumulative whToday counters. Called after every successful live
-        fetch - the delta since the last call is added to whichever
-        half-hour bucket "now" falls into.
+        delta in whLifetime between this poll and the previous one, added
+        to whichever half-hour bucket "now" falls into.
 
-        A delta spanning a bucket boundary (e.g. a reading at 1:59:55 then
-        the next at 2:00:05) is simply attributed entirely to the new
-        bucket - with polling every few seconds this is negligible, and
-        far simpler than splitting a delta proportionally across a
-        boundary for a display that's only ever showing rounded Wh anyway.
+        Two earlier approaches were tried and dropped:
+          - Diffing whToday: this Envoy's firmware updates the consumption
+            meter's whToday in infrequent bursts (minutes apart) rather
+            than continuously, so most deltas were zero, punctuated by one
+            big jump landing entirely in whichever bucket happened to be
+            current - not the buckets the energy was actually drawn in.
+          - Integrating wNow (instantaneous power) over elapsed time: this
+            is only ever an approximation (it assumes power varies
+            smoothly between polls), and can miss genuine variation that
+            happens between samples.
+        whLifetime deltas have neither problem: it's a true cumulative
+        meter, so a delta between any two readings captures exactly the
+        energy used in between, regardless of polling gaps - including
+        gaps from a restart or network outage, which this version no
+        longer needs to specially detect or cap (contrast the old
+        MAX_INTRADAY_GAP_HOURS skip-logic, now removed).
+
+        A delta spanning a bucket boundary (e.g. the previous poll was in
+        bucket 27, this one is in bucket 28) is attributed entirely to the
+        new bucket - negligible with polling every few seconds, though a
+        long gap (hours) would show up as one artificial spike in the
+        resuming bucket rather than being spread across the buckets that
+        elapsed - a reasonable tradeoff against the complexity of actually
+        splitting it, and the day's running total stays exactly correct
+        either way.
         """
         now = datetime.now()
         today_str = now.strftime("%Y-%m-%d")
@@ -351,25 +450,25 @@ class SolarService:
             bucket_changed = (not is_new_day) and (bucket_index != self.intraday_last_bucket_index)
 
             if is_new_day:
-                # First reading ever, or the day has rolled over (whToday
-                # itself resets to ~0 on the Envoy at local midnight too).
                 self.intraday_date = today_str
                 self.intraday_production_wh = [0.0] * INTRADAY_BUCKETS
                 self.intraday_consumption_wh = [0.0] * INTRADAY_BUCKETS
-            else:
-                prod_delta = production_today_wh - self.intraday_last_production_wh_today
-                cons_delta = consumption_today_wh - self.intraday_last_consumption_wh_today
-                # A negative delta without a date change means the Envoy's
-                # counter reset underneath us (e.g. it rebooted) - drop
+            elif self.intraday_last_production_wh_lifetime is not None:
+                prod_delta = production_wh_lifetime - self.intraday_last_production_wh_lifetime
+                cons_delta = consumption_wh_lifetime - self.intraday_last_consumption_wh_lifetime
+                # A negative delta without a date change means the
+                # lifetime counter reset/glitched underneath us - drop
                 # this cycle's delta rather than corrupting a bucket with
                 # a negative value.
                 if prod_delta >= 0:
                     self.intraday_production_wh[bucket_index] += prod_delta
                 if cons_delta >= 0:
                     self.intraday_consumption_wh[bucket_index] += cons_delta
+            # else: first reading ever (both None) - nothing to diff
+            # against yet, just record the baseline below.
 
-            self.intraday_last_production_wh_today = production_today_wh
-            self.intraday_last_consumption_wh_today = consumption_today_wh
+            self.intraday_last_production_wh_lifetime = production_wh_lifetime
+            self.intraday_last_consumption_wh_lifetime = consumption_wh_lifetime
             self.intraday_last_bucket_index = bucket_index
 
             due_to_save = (
@@ -455,9 +554,12 @@ class SolarService:
                 verify=False,  # self-signed cert on the local Envoy
             )
             response.raise_for_status()
-            production_w, consumption_w, today_wh, consumption_today_wh = _parse_production_json(
-                response.json()
-            )
+            (
+                production_w,
+                consumption_w,
+                production_wh_lifetime,
+                consumption_wh_lifetime,
+            ) = _parse_production_json(response.json())
 
         except (RequestException, ValueError, KeyError, StopIteration) as exc:
             with self.lock:
@@ -474,19 +576,37 @@ class SolarService:
                 )
             return
 
+        today_str = datetime.now().strftime("%Y-%m-%d")
         with self.lock:
+            if self.daily_baseline_date != today_str:
+                # First reading of a new day (or the very first run ever) -
+                # capture today's starting lifetime values as the baseline
+                # everything else subtracts from.
+                self.daily_baseline_date = today_str
+                self.daily_production_wh_baseline = production_wh_lifetime
+                self.daily_consumption_wh_baseline = consumption_wh_lifetime
+                self._save_daily_baseline_cache_locked()
+
+            # max(0.0, ...) guards against a lifetime-counter glitch/reset
+            # producing a nonsensical negative "today" value.
+            energy_today_wh = max(0.0, production_wh_lifetime - self.daily_production_wh_baseline)
+            consumption_today_wh = max(
+                0.0, consumption_wh_lifetime - self.daily_consumption_wh_baseline
+            )
+
             self.current_power_w = production_w
             self.consumption_power_w = consumption_w
-            self.energy_today_wh = today_wh
+            self.energy_today_wh = energy_today_wh
+            self.consumption_energy_today_wh = consumption_today_wh
             self.live_state.record_success()
 
-        self._update_intraday(today_wh, consumption_today_wh)
+        self._update_intraday(production_wh_lifetime, consumption_wh_lifetime)
 
         logger.info(
             "Solar live reading updated: %.0fW producing, %.0fW consuming, %.2fkWh today",
             production_w,
             consumption_w,
-            today_wh / 1000.0,
+            energy_today_wh / 1000.0,
         )
 
     # ------------------------------------------------------------------
