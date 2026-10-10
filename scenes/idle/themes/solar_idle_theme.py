@@ -27,12 +27,16 @@ USE_X = 1
 USE_Y = 20
 TODAY_X = 1
 TODAY_Y = 30
+POWER_CHANGE_THRESHOLD_W = 500
 
 class SolarIdleTheme(BaseIdleScene):
     """Live generation vs. consumption , plus today's total generation."""
 
+    default_display_mode = "eligible"
+
     def theme_init(self) -> None:
         self.solar = SolarService.instance()
+        self.previous_power_reading: tuple[float | None, float | None] | None = None
         self.labels_drawn = False
         self.last_gen_str: str | None = None
         self.last_use_str: str | None = None
@@ -43,6 +47,25 @@ class SolarIdleTheme(BaseIdleScene):
         self.last_gen_str = None
         self.last_use_str = None
         self.last_today_str = None
+
+    def should_display(self) -> bool:
+        reading = self.solar.get()
+        if reading is None:
+            self.previous_power_reading = None
+            return False
+
+        current = (reading["current_power_w"], reading["consumption_power_w"])
+        previous = self.previous_power_reading
+        self.previous_power_reading = current
+        if previous is None:
+            return False
+
+        return any(
+            old is not None
+            and new is not None
+            and abs(new - old) > POWER_CHANGE_THRESHOLD_W
+            for old, new in zip(previous, current)
+        )
 
     def draw_content(self, count: int) -> None:
         cfg = Config.instance()

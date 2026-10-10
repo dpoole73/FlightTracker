@@ -131,11 +131,14 @@ DEFAULT_IDLE_SCREEN_THEME = "classic"  # classic / forecast
 # theme so upgrading existing installs doesn't change behaviour.
 DEFAULT_IDLE_THEME_ORDER = [DEFAULT_IDLE_SCREEN_THEME]  # ["classic"]
 DEFAULT_IDLE_THEME_ROTATION_SECONDS = 15
+DEFAULT_IDLE_SOLAR_BARS_ENABLED = True
  
 # All theme keys the rotator knows how to build. Kept as a constant (rather
 # than deriving from the registry) so validation doesn't need to import
 # scene code, avoiding a circular import from setup -> scenes -> setup.
 IDLE_THEME_CHOICES = ("classic", "forecast", "conditions", "stock", "solar", "solar_history", "solar_intraday") 
+IDLE_THEME_SCHEDULE_MODES = ("always", "eligible", "disabled")
+DEFAULT_IDLE_THEME_SCHEDULES: dict[str, list[dict[str, Any]]] = {}
 # Stock ticker idle theme
 DEFAULT_STOCK_API_KEY = ""
 DEFAULT_STOCK_SYMBOL = "MSFT"
@@ -279,6 +282,8 @@ DEFAULTS: dict[str, Any] = {
     "idle_screen_theme": DEFAULT_IDLE_SCREEN_THEME,
     "idle_theme_order": DEFAULT_IDLE_THEME_ORDER,
     "idle_theme_rotation_seconds": DEFAULT_IDLE_THEME_ROTATION_SECONDS,
+    "idle_theme_schedules": DEFAULT_IDLE_THEME_SCHEDULES,
+    "idle_solar_bars_enabled": DEFAULT_IDLE_SOLAR_BARS_ENABLED,
 
     # Stock ticker idle theme
     "stock_api_key": DEFAULT_STOCK_API_KEY,
@@ -1420,6 +1425,15 @@ class Config:
             return list(DEFAULT_IDLE_THEME_ORDER)
         cleaned = [str(v).lower() for v in val if str(v).lower() in IDLE_THEME_CHOICES]
         return cleaned or list(DEFAULT_IDLE_THEME_ORDER)
+
+    @property
+    def idle_solar_bars_enabled(self) -> bool:
+        """Whether classic idle shows live generation and consumption bars."""
+        return bool(
+            self.data_store.get(
+                "idle_solar_bars_enabled", DEFAULT_IDLE_SOLAR_BARS_ENABLED
+            )
+        )
  
     @property
     def idle_theme_rotation_seconds(self) -> int:
@@ -1433,6 +1447,55 @@ class Config:
         except (TypeError, ValueError):
             return DEFAULT_IDLE_THEME_ROTATION_SECONDS
         return max(3, val)  # guard against a 0/negative value spinning the CPU
+
+    @property
+    def idle_theme_schedules(self) -> dict[str, list[dict[str, str]]]:
+        """Per-theme time modes, ordered by time and validated for safe use."""
+        raw = self.data_store.get("idle_theme_schedules", DEFAULT_IDLE_THEME_SCHEDULES)
+        if not isinstance(raw, dict):
+            return {}
+
+        schedules: dict[str, list[dict[str, str]]] = {}
+        for theme_name, entries in raw.items():
+            theme_name = str(theme_name).lower()
+            if theme_name not in IDLE_THEME_CHOICES or not isinstance(entries, list):
+                continue
+            cleaned: dict[int, dict[str, str]] = {}
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                schedule_time = _parse_schedule_time(entry.get("time"))
+                mode = str(entry.get("mode", "")).lower()
+                if schedule_time is None or mode not in IDLE_THEME_SCHEDULE_MODES:
+                    continue
+                minute = schedule_time.hour * 60 + schedule_time.minute
+                cleaned[minute] = {
+                    "time": schedule_time.strftime("%H:%M"),
+                    "mode": mode,
+                }
+            if cleaned:
+                schedules[theme_name] = [cleaned[minute] for minute in sorted(cleaned)]
+        return schedules
+
+    def idle_theme_schedule_mode(
+        self, theme_name: str, now: time | None = None
+    ) -> str | None:
+        """Return the active scheduled mode, or None when no rule is set."""
+        entries = self.idle_theme_schedules.get(theme_name, [])
+        if not entries:
+            return None
+        current_time = now if now is not None else datetime.now().time()
+        now_minutes = current_time.hour * 60 + current_time.minute
+        active = entries[-1]
+        for entry in entries:
+            schedule_time = _parse_schedule_time(entry["time"])
+            if schedule_time is not None and (
+                schedule_time.hour * 60 + schedule_time.minute
+            ) <= now_minutes:
+                active = entry
+            else:
+                break
+        return active["mode"]
  
     @property
     def stock_api_key(self) -> str:

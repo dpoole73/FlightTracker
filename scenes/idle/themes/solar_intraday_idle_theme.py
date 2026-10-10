@@ -14,7 +14,9 @@ from __future__ import annotations
 
 from scenes.idle.idle_scene import BaseIdleScene
 from setup import colours, fonts, screen
+from setup.configuration import Config
 from utilities.solar_service import INTRADAY_BUCKETS, SolarService
+from utilities.sun_times import is_daytime
 
 CENTER_Y = screen.HEIGHT // 2
 MAX_HALF_HEIGHT = max(2, CENTER_Y - 2)  # leave a small margin top and bottom
@@ -24,16 +26,28 @@ GRAPH_WIDTH = INTRADAY_BUCKETS * BAR_WIDTH
 START_X = max(0, (screen.WIDTH - GRAPH_WIDTH) // 2)
 
 CENTER_LINE_COLOUR = colours.GREY
+DISPLAY_EVERY_ELIGIBILITY_CHECKS = 4
 
 
 class SolarIntradayIdleTheme(BaseIdleScene):
     """Mirrored half-hourly bar graph: generation up, usage down, from a center line."""
 
+    default_display_mode = "eligible"
+
     def theme_init(self) -> None:
         self.solar = SolarService.instance()
+        self.eligibility_checks = 0
 
     def theme_reset(self) -> None:
         pass  # full wipe every redraw - nothing to carry between frames
+
+    def should_display(self) -> bool:
+        self.eligibility_checks += 1
+        if self.eligibility_checks % DISPLAY_EVERY_ELIGIBILITY_CHECKS:
+            return False
+
+        cfg = Config.instance()
+        return is_daytime(cfg.observer_lat, cfg.observer_lng)
 
     def draw_content(self, count: int) -> None:
         # Full wipe each redraw (once/sec) - bars can only grow taller as

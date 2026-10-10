@@ -33,6 +33,8 @@ from setup.themes import (
     THEME_TIME,
     THEME_TIME_AMPM,
 )
+from setup import colours
+from utilities.solar_service import SolarService
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -62,6 +64,14 @@ TEMPERATURE_FONT = fonts.extrasmall
 TEMPERATURE_FONT_HEIGHT = 5
 TEMPERATURE_POSITION = (48, TEMPERATURE_FONT_HEIGHT + 1)
 
+# Live power bars fit below the rainfall graph at the far right.
+POWER_BAR_BASE_Y = 30
+POWER_BAR_MAX_HEIGHT = 13
+POWER_BAR_MAX_POWER_W = 15_000
+POWER_BAR_WIDTH = 2
+POWER_GENERATION_X = 57
+POWER_CONSUMPTION_X = 61
+
 
 class ClassicIdleTheme(BaseIdleScene):
     """
@@ -81,6 +91,8 @@ class ClassicIdleTheme(BaseIdleScene):
         self.last_temp_str: str | None = None
         self.last_temp_c: float | None = None
         self.last_rain_data: list | None = None
+        self.solar = None
+        self.last_power_bar_heights: tuple[int, int] | None = None
 
     def theme_reset(self) -> None:
         """Called by BaseIdleScene.reset() to clear theme-specific state."""
@@ -90,6 +102,7 @@ class ClassicIdleTheme(BaseIdleScene):
         self.last_temp_str = None
         self.last_temp_c = None
         self.last_rain_data = None
+        self.last_power_bar_heights = None
 
     # ------------------------------------------------------------------
     # draw_content - called once per second by BaseIdleScene.draw()
@@ -100,6 +113,98 @@ class ClassicIdleTheme(BaseIdleScene):
         self.draw_date()
         self.draw_day()
         self.draw_weather(count)
+        self.draw_power_bars()
+
+    def draw_power_bars(self) -> None:
+        """Show live generation (green) and consumption (red) up to 15 kW."""
+        if not Config.instance().idle_solar_bars_enabled:
+            if self.last_power_bar_heights is not None:
+                for x, height in zip(
+                    (POWER_GENERATION_X, POWER_CONSUMPTION_X),
+                    self.last_power_bar_heights,
+                ):
+                    if height:
+                        self.panel.draw_square(
+                            self.canvas,
+                            x,
+                            POWER_BAR_BASE_Y - height,
+                            x + POWER_BAR_WIDTH,
+                            POWER_BAR_BASE_Y,
+                            TC(THEME_BG),
+                        )
+                self.panel.draw_line(
+                    self.canvas,
+                    POWER_GENERATION_X - 1,
+                    POWER_BAR_BASE_Y,
+                    POWER_CONSUMPTION_X + POWER_BAR_WIDTH,
+                    POWER_BAR_BASE_Y,
+                    TC(THEME_BG),
+                )
+                self.last_power_bar_heights = None
+            return
+
+        if self.solar is None:
+            self.solar = SolarService.instance()
+
+        reading = self.solar.get()
+        if reading is None:
+            heights = (0, 0)
+        else:
+            powers = (
+                reading.get("current_power_w"),
+                reading.get("consumption_power_w"),
+            )
+            heights = tuple(
+                min(
+                    POWER_BAR_MAX_HEIGHT,
+                    ceil(max(0.0, power) * POWER_BAR_MAX_HEIGHT / POWER_BAR_MAX_POWER_W),
+                )
+                if power is not None
+                else 0
+                for power in powers
+            )
+
+        if heights == self.last_power_bar_heights:
+            return
+
+        if self.last_power_bar_heights is not None:
+            for x, height in zip(
+                (POWER_GENERATION_X, POWER_CONSUMPTION_X),
+                self.last_power_bar_heights,
+            ):
+                if height:
+                    self.panel.draw_square(
+                        self.canvas,
+                        x,
+                        POWER_BAR_BASE_Y - height,
+                        x + POWER_BAR_WIDTH,
+                        POWER_BAR_BASE_Y,
+                        TC(THEME_BG),
+                    )
+
+        self.panel.draw_line(
+            self.canvas,
+            POWER_GENERATION_X - 1,
+            POWER_BAR_BASE_Y,
+            POWER_CONSUMPTION_X + POWER_BAR_WIDTH,
+            POWER_BAR_BASE_Y,
+            colours.DARK_GREY,
+        )
+        for x, height, colour in zip(
+            (POWER_GENERATION_X, POWER_CONSUMPTION_X),
+            heights,
+            (colours.GREEN, colours.RED),
+        ):
+            if height:
+                self.panel.draw_square(
+                    self.canvas,
+                    x,
+                    POWER_BAR_BASE_Y - height,
+                    x + POWER_BAR_WIDTH,
+                    POWER_BAR_BASE_Y,
+                    colour,
+                )
+        self.last_power_bar_heights = heights
 
     # ------------------------------------------------------------------
     # Clock

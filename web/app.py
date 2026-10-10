@@ -430,6 +430,52 @@ def _parse_schedule_advanced_form(form) -> dict:
     return {"screen_schedule_advanced": [cleaned[m] for m in sorted(cleaned)]}
 
 
+def _parse_idle_theme_schedules_form(form) -> dict:
+    """Parse per-theme idle display modes submitted as JSON."""
+    import json as _json
+
+    from setup.configuration import (
+        IDLE_THEME_CHOICES,
+        IDLE_THEME_SCHEDULE_MODES,
+        _parse_schedule_time,
+    )
+
+    raw = form.get("idle_theme_schedules_json")
+    if not raw:
+        return {}
+    try:
+        schedules = _json.loads(raw)
+    except ValueError:
+        logger.warning("Ignoring malformed idle_theme_schedules_json payload")
+        return {}
+    if not isinstance(schedules, dict):
+        return {}
+
+    cleaned_schedules: dict[str, list[dict[str, str]]] = {}
+    for theme_name, entries in schedules.items():
+        theme_name = str(theme_name).lower()
+        if theme_name not in IDLE_THEME_CHOICES or not isinstance(entries, list):
+            continue
+        cleaned: dict[int, dict[str, str]] = {}
+        for entry in entries:
+            if not isinstance(entry, dict):
+                continue
+            schedule_time = _parse_schedule_time(entry.get("time"))
+            mode = str(entry.get("mode", "")).lower()
+            if schedule_time is None or mode not in IDLE_THEME_SCHEDULE_MODES:
+                continue
+            minute = schedule_time.hour * 60 + schedule_time.minute
+            cleaned[minute] = {
+                "time": schedule_time.strftime("%H:%M"),
+                "mode": mode,
+            }
+        if cleaned:
+            cleaned_schedules[theme_name] = [
+                cleaned[minute] for minute in sorted(cleaned)
+            ]
+    return {"idle_theme_schedules": cleaned_schedules}
+
+
 def _parse_provider_settings(form, cfg) -> dict[str, dict]:
     """Collect ``providers.<pid>.<field>`` form keys into a settings subtree.
 
@@ -650,6 +696,8 @@ def parse_settings_form(form, cfg) -> dict:
         "idle_theme_rotation_seconds": max(
             3, int_val(form.get("idle_theme_rotation_seconds"), 15)
         ),
+        "idle_solar_bars_enabled": bool_val(form.get("idle_solar_bars_enabled")),
+        **_parse_idle_theme_schedules_form(form),
  
         # Stock ticker idle theme
         "stock_api_key": str_val(form.get("stock_api_key"), cfg.stock_api_key),

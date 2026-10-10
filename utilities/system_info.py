@@ -17,8 +17,10 @@ from __future__ import annotations
 
 import logging
 import os
+import platform
 import shutil
 import socket
+import subprocess
 import time
 
 logger = logging.getLogger(__name__)
@@ -83,13 +85,32 @@ def cpu_temperature() -> float | None:
 
 
 def uptime_seconds() -> int | None:
-    """Seconds since boot, from /proc/uptime."""
+    """Seconds since boot, using the host's available boot-time source."""
     token = _read("/proc/uptime")
-    if token is None:
+    if token is not None:
+        try:
+            return int(float(token.split()[0]))
+        except (ValueError, IndexError):
+            pass
+
+    if platform.system() != "Darwin":
         return None
+
     try:
-        return int(float(token.split()[0]))
-    except (ValueError, IndexError):
+        result = subprocess.run(
+            ["sysctl", "-n", "kern.boottime"],
+            capture_output=True,
+            text=True,
+            check=True,
+            timeout=2,
+        )
+        seconds = next(
+            field.split("=", 1)[1].strip()
+            for field in result.stdout.replace("{", "").split(",")
+            if field.strip().startswith("sec =")
+        )
+        return max(0, int(time.time() - int(seconds)))
+    except (OSError, subprocess.SubprocessError, StopIteration, ValueError):
         return None
 
 

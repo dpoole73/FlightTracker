@@ -6,6 +6,8 @@ These read the real host - assertions are shaped to hold on any Linux box
 
 from __future__ import annotations
 
+import ipaddress
+
 import pytest
 
 
@@ -31,6 +33,24 @@ class TestSystemInfo:
         uptime = uptime_seconds()
         assert uptime is not None
         assert uptime > 0
+
+    def test_uptime_uses_macos_sysctl_when_proc_is_unavailable(self, monkeypatch):
+        from types import SimpleNamespace
+
+        from utilities import system_info
+
+        monkeypatch.setattr(system_info, "_read", lambda path: None)
+        monkeypatch.setattr(system_info.platform, "system", lambda: "Darwin")
+        monkeypatch.setattr(system_info.time, "time", lambda: 1_000_123)
+        monkeypatch.setattr(
+            system_info.subprocess,
+            "run",
+            lambda *args, **kwargs: SimpleNamespace(
+                stdout="{ sec = 1000000, usec = 123456 } Fri"
+            ),
+        )
+
+        assert system_info.uptime_seconds() == 123
 
     def test_load_average_returned_triple(self):
         from utilities.system_info import load_average
@@ -64,11 +84,16 @@ class TestSystemInfo:
         temp = cpu_temperature()
         assert temp is None or 0 < temp < 120
 
-    def test_ip_is_dotted_quad_or_none(self):
+    def test_ip_is_valid_ip_or_none(self):
         from utilities.system_info import ip_address
 
         ip = ip_address()
-        assert ip is None or len(ip.split(".")) == 4
+        if ip is None:
+            return
+        try:
+            ipaddress.ip_address(ip)
+        except ValueError as exc:  # pragma: no cover - assertion message for diagnostics
+            pytest.fail(f"Expected None or valid IPv4/IPv6 address, got {ip!r}")
 
     def test_throughput_first_call_has_no_rate(self):
         from utilities.system_info import _last_samples, network_throughput

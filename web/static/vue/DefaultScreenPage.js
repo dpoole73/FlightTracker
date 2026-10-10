@@ -72,6 +72,48 @@ export default defineComponent({
       [list[index], list[index + 1]] = [list[index + 1], list[index]];
       this.store.config.idle_theme_order = list;
     },
+    themeSchedule(key) {
+      const schedules = this.store.config.idle_theme_schedules || {};
+      return schedules[key] || [];
+    },
+    setThemeSchedule(key, entries) {
+      const schedules = { ...(this.store.config.idle_theme_schedules || {}) };
+      if (entries.length) schedules[key] = entries;
+      else delete schedules[key];
+      this.store.config.idle_theme_schedules = schedules;
+    },
+    updateThemeSchedule(key, index, field, value) {
+      const entries = this.themeSchedule(key).map((entry) => ({ ...entry }));
+      entries[index][field] = value;
+      entries.sort((a, b) => a.time.localeCompare(b.time));
+      this.setThemeSchedule(key, entries);
+    },
+    addThemeScheduleEntry(key) {
+      const entries = this.themeSchedule(key).map((entry) => ({ ...entry }));
+      if (entries.length >= 24) return;
+      const times = new Set(entries.map((entry) => entry.time));
+      let time = "00:00";
+      for (let hour = 0; hour < 24; hour += 1) {
+        const candidate = `${String(hour).padStart(2, "0")}:00`;
+        if (!times.has(candidate)) {
+          time = candidate;
+          break;
+        }
+      }
+      const mode = entries.length
+        ? entries[entries.length - 1].mode
+        : ["solar", "solar_intraday"].includes(key) ? "eligible" : "always";
+      entries.push({ time, mode });
+      entries.sort((a, b) => a.time.localeCompare(b.time));
+      this.setThemeSchedule(key, entries);
+    },
+    removeThemeScheduleEntry(key, index) {
+      const entries = this.themeSchedule(key).filter((_, i) => i !== index);
+      this.setThemeSchedule(key, entries);
+    },
+    themeSchedulesJson() {
+      return JSON.stringify(this.store.config.idle_theme_schedules || {});
+    },
   },
   template: `
     <div>
@@ -85,27 +127,72 @@ export default defineComponent({
         one to rotate between them.
       </p>
 
+      <div v-if="activeThemes.includes('classic')" class="form-check mb-3">
+        <input type="checkbox" class="form-check-input" name="idle_solar_bars_enabled"
+               id="idle_solar_bars_enabled" v-model="store.config.idle_solar_bars_enabled" />
+        <label class="form-check-label" for="idle_solar_bars_enabled">
+          Show live solar generation and consumption bars on Classic
+        </label>
+      </div>
+
       <!-- Serialised for the classic form POST, same approach as satellite_norad_ids -->
       <input type="hidden" name="idle_theme_order" :value="activeThemes.join(',')" />
+      <input type="hidden" name="idle_theme_schedules_json" :value="themeSchedulesJson()" />
 
       <ul class="list-group mb-3">
         <li v-for="(key, index) in activeThemes" :key="key"
-            class="list-group-item d-flex align-items-center justify-content-between">
-          <span><i :class="'bi me-2 ' + themeMeta[key].icon"></i>{{ themeMeta[key].label }}</span>
-          <span>
-            <button type="button" class="btn btn-sm btn-outline-secondary me-1"
-                    :disabled="index === 0" @click="moveUp(index)" title="Move up">
-              <i class="bi bi-arrow-up"></i>
+            class="list-group-item">
+          <div class="d-flex align-items-center justify-content-between">
+            <span><i :class="'bi me-2 ' + themeMeta[key].icon"></i>{{ themeMeta[key].label }}</span>
+            <span>
+              <button type="button" class="btn btn-sm btn-outline-secondary me-1"
+                      :disabled="index === 0" @click="moveUp(index)" title="Move up">
+                <i class="bi bi-arrow-up"></i>
+              </button>
+              <button type="button" class="btn btn-sm btn-outline-secondary me-1"
+                      :disabled="index === activeThemes.length - 1" @click="moveDown(index)" title="Move down">
+                <i class="bi bi-arrow-down"></i>
+              </button>
+              <button type="button" class="btn btn-sm btn-outline-danger"
+                      @click="removeTheme(key)" title="Disable">
+                <i class="bi bi-x-lg"></i>
+              </button>
+            </span>
+          </div>
+          <details class="mt-2">
+            <summary class="small text-muted">Time-based display modes</summary>
+            <p class="form-text small">A rule applies from its time until the next rule; the last rule carries overnight.</p>
+            <p v-if="!themeSchedule(key).length" class="form-text small">No rules uses this screen's built-in eligibility.</p>
+            <div v-for="(entry, scheduleIndex) in themeSchedule(key)" :key="scheduleIndex"
+                 class="row g-2 align-items-center mb-2">
+              <div class="col-5">
+                <input type="time" class="form-control form-control-sm" :value="entry.time"
+                       @change="updateThemeSchedule(key, scheduleIndex, 'time', $event.target.value)"
+                       :aria-label="themeMeta[key].label + ' rule time'" />
+              </div>
+              <div class="col-5">
+                <select class="form-select form-select-sm" :value="entry.mode"
+                        @change="updateThemeSchedule(key, scheduleIndex, 'mode', $event.target.value)"
+                        :aria-label="themeMeta[key].label + ' display mode'">
+                  <option value="always">Always</option>
+                  <option value="eligible">Only when eligible</option>
+                  <option value="disabled">Disabled</option>
+                </select>
+              </div>
+              <div class="col-2 text-end">
+                <button type="button" class="btn btn-sm btn-outline-danger"
+                        @click="removeThemeScheduleEntry(key, scheduleIndex)"
+                        :aria-label="'Remove ' + themeMeta[key].label + ' time rule'">
+                  <i class="bi bi-x-lg"></i>
+                </button>
+              </div>
+            </div>
+            <button type="button" class="btn btn-sm btn-outline-primary"
+                    :disabled="themeSchedule(key).length >= 24"
+                    @click="addThemeScheduleEntry(key)">
+              <i class="bi bi-plus-lg me-1"></i>Add time rule
             </button>
-            <button type="button" class="btn btn-sm btn-outline-secondary me-1"
-                    :disabled="index === activeThemes.length - 1" @click="moveDown(index)" title="Move down">
-              <i class="bi bi-arrow-down"></i>
-            </button>
-            <button type="button" class="btn btn-sm btn-outline-danger"
-                    @click="removeTheme(key)" title="Disable">
-              <i class="bi bi-x-lg"></i>
-            </button>
-          </span>
+          </details>
         </li>
         <li v-if="activeThemes.length === 0" class="list-group-item text-muted small">
           No idle screens enabled - add one below.
@@ -128,7 +215,7 @@ export default defineComponent({
                  v-model.number="store.config.idle_theme_rotation_seconds" min="3" max="600" />
           <span class="input-group-text">seconds</span>
         </div>
-        <div class="form-text text-muted small">How long each idle screen stays up before rotating to the next.</div>
+        <div class="form-text text-muted small">The first eligible screen stays up four times longer; later screens use this interval.</div>
       </div>
     </div>
 
