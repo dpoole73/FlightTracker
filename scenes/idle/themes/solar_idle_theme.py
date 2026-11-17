@@ -1,36 +1,33 @@
-"""
-SolarIdleTheme - live production and consumption side by side, plus
-today's cumulative production. Two-column layout echoes the original
-SolarScene's Used/Gen bar-graph columns, just with live numbers instead
-of history bars.
+"""Live solar production and consumption, with today's energy totals.
 
 Consumption comes from SolarService's latest_telemetry parsing, which
 may be None if Enphase's response shape didn't match what we guessed
 (see _parse_latest_telemetry's docstring in solar_service.py) - handled
-here by showing "--" for that column rather than crashing or hiding the
-whole theme, since production+today are still valid either way.
+here by showing "--" rather than crashing or hiding the whole theme.
 """
 
 from __future__ import annotations
 
 from scenes.idle.idle_scene import BaseIdleScene
-from setup import colours, fonts, screen
+from setup import colours, fonts
 from setup.configuration import Config
 from utilities.solar_service import SolarService
 
-LABEL_FONT = fonts.regular  # "Gen"/"Use" - short enough to fit at this size
-VALUE_FONT = fonts.small  # 4px/char - "regular" (6px/char) overlapped between columns
+VALUE_FONT = fonts.extrasmall
 
 GEN_X = 1
-GEN_Y = 10
+GEN_Y = 6
+TODAY_X = 1
+TODAY_Y = 13
 USE_X = 1
 USE_Y = 20
-TODAY_X = 1
-TODAY_Y = 30
+USED_TODAY_X = 1
+USED_TODAY_Y = 27
 POWER_CHANGE_THRESHOLD_W = 500
 
+
 class SolarIdleTheme(BaseIdleScene):
-    """Live generation vs. consumption , plus today's total generation."""
+    """Live generation and consumption, plus today's energy totals."""
 
     default_display_mode = "eligible"
 
@@ -41,12 +38,14 @@ class SolarIdleTheme(BaseIdleScene):
         self.last_gen_str: str | None = None
         self.last_use_str: str | None = None
         self.last_today_str: str | None = None
+        self.last_used_today_str: str | None = None
 
     def theme_reset(self) -> None:
         self.labels_drawn = False
         self.last_gen_str = None
         self.last_use_str = None
         self.last_today_str = None
+        self.last_used_today_str = None
 
     def should_display(self) -> bool:
         reading = self.solar.get()
@@ -79,13 +78,19 @@ class SolarIdleTheme(BaseIdleScene):
         gen_kw = reading["current_power_w"] / 1000.0
         today_kwh = reading["energy_today_wh"] / 1000.0
         use_w = reading["consumption_power_w"]
+        used_today_wh = reading.get("consumption_energy_today_wh")
 
         self._draw_gen(f"{gen_kw:.2f}kW", colours.GREEN)
+        self._draw_today(f"{today_kwh:.1f}kWh")
         self._draw_use(
             f"{use_w / 1000.0:.2f}kW" if use_w is not None else "--",
-            colours.RED
+            colours.RED,
         )
-        self._draw_today(f"{today_kwh:.1f}kWh")
+        self._draw_used_today(
+            f"{used_today_wh / 1000.0:.1f}kWh"
+            if used_today_wh is not None
+            else "--"
+        )
 
     # ------------------------------------------------------------------
 
@@ -98,6 +103,7 @@ class SolarIdleTheme(BaseIdleScene):
         self._draw_gen(text, colours.WHITE)
         self._erase_use()
         self._erase_today()
+        self._erase_used_today()
 
     # ------------------------------------------------------------------
     # Erase-then-redraw helpers - avoids flicker by only touching pixels
@@ -141,3 +147,24 @@ class SolarIdleTheme(BaseIdleScene):
                 self.canvas, VALUE_FONT, TODAY_X, TODAY_Y, colours.BLACK, self.last_today_str
             )
             self.last_today_str = None
+
+    def _draw_used_today(self, text: str) -> None:
+        if self.last_used_today_str == text:
+            return
+        self._erase_used_today()
+        self.panel.draw_text(
+            self.canvas, VALUE_FONT, USED_TODAY_X, USED_TODAY_Y, colours.ORANGE, text
+        )
+        self.last_used_today_str = text
+
+    def _erase_used_today(self) -> None:
+        if self.last_used_today_str is not None:
+            self.panel.draw_text(
+                self.canvas,
+                VALUE_FONT,
+                USED_TODAY_X,
+                USED_TODAY_Y,
+                colours.BLACK,
+                self.last_used_today_str,
+            )
+            self.last_used_today_str = None
