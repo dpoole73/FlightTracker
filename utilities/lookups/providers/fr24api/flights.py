@@ -60,6 +60,10 @@ def _to_observation(record: dict) -> FlightObservation | None:
         origin=clean_field(record.get("orig_iata")),
         destination=clean_field(record.get("dest_iata")),
         airline_icao=clean_field(record.get("painted_as")),
+        # Docs document "sqr" for the /full endpoint (with a "squawks"
+        # filter param).  No token exists here to verify hands-on, but
+        # squawk is extracted whenever a configured token returns it.
+        squawk=clean_field(record.get("sqr")),
     )
 
 
@@ -117,7 +121,10 @@ class FlightProvider:
 
         candidates.sort(
             key=lambda obs: distance_from_home(
-                home, obs.latitude or 0.0, obs.longitude or 0.0, obs.altitude_ft or 0
+                obs.latitude or 0.0,
+                obs.longitude or 0.0,
+                obs.altitude_ft or 0,
+                home,
             )
         )
         selected = candidates[: query.max_results]

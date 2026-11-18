@@ -10,23 +10,9 @@ from utilities.lookups.results import (
     FlightQuery,
     LookupResult,
 )
+from utilities.overhead_utilities import distance_from_home
 
 logger = logging.getLogger(__name__)
-
-
-def _distance_to_home(home, latitude, longitude, alt_ft):
-    """Distance from a live FR24 flight to the observer (0.0 invalid-safe)."""
-    import math
-
-    try:
-        lat0, lng0, radius_km = float(home[0]), float(home[1]), float(home[2])
-    except (TypeError, ValueError, IndexError):
-        return 0.0
-    # Approximate planar distance - sufficient for sorting candidates.
-    d_lat = (latitude - lat0) * 111.0
-    d_lng = (longitude - lng0) * 111.0 * math.cos(math.radians(lat0))
-    d_alt = (alt_ft * 0.0003048) - (radius_km - 6371.0)
-    return math.sqrt(d_lat * d_lat + d_lng * d_lng + d_alt * d_alt)
 
 
 class FlightProvider:
@@ -72,8 +58,8 @@ class FlightProvider:
             and min_alt_ft < f.altitude < max_alt_ft
         ]
         flights.sort(
-            key=lambda f: _distance_to_home(
-                home, f.latitude or 0.0, f.longitude or 0.0, f.altitude or 0
+            key=lambda f: distance_from_home(
+                f.latitude or 0.0, f.longitude or 0.0, f.altitude or 0, home
             )
         )
 
@@ -133,6 +119,11 @@ def _to_observation(flight) -> FlightObservation | None:
         origin=clean_field(flight.origin_airport_iata),
         destination=clean_field(flight.destination_airport_iata),
         airline_icao=clean_field(flight.airline_icao),
+        # Squawk: FlightRadarAPI maps feed index 6 to Flight.squawk, but
+        # FR24's free feed stopped populating that slot (always '' - see
+        # fr24/config.py).  Extracted anyway so squawk flows again if
+        # FR24 ever re-enables it.
+        squawk=clean_field(getattr(flight, "squawk", "")),
     )
 
 

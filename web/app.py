@@ -544,6 +544,7 @@ def parse_settings_form(form, cfg) -> dict:
         "details_custom_template": str_val(
             form.get("details_custom_template"), cfg.details_custom_template
         ),
+        "show_emergency_squawk": bool_val(form.get("show_emergency_squawk")),
         # Weather
         "weatherapi_key": str_val(form.get("weatherapi_key"), cfg.weatherapi_key),
         "weather_mode": int_val(form.get("weather_mode"), 0),
@@ -599,6 +600,16 @@ def parse_settings_form(form, cfg) -> dict:
             "conditions": {
                 "disable_description_scroll": bool_val(
                     form.get("theme_conditions_disable_scroll")
+                ),
+                "wind_arrow_mode": (
+                    v
+                    if (
+                        v := str_val(
+                            form.get("theme_conditions_wind_arrow_mode"), "from"
+                        ).lower()
+                    )
+                    in ("from", "to")
+                    else "from"
                 ),
             },
         },
@@ -713,9 +724,17 @@ def parse_settings_form(form, cfg) -> dict:
         "providers": _parse_provider_settings(form, cfg),
         "max_flight_lookup": max(1, int_val(form.get("max_flight_lookup"), 5)),
         # Max minutes to keep a sighted flight in the rotation (0 = no
-        # timeout); clamped here and in Config
+        # timeout; decimals allowed, 0.5 = 30 seconds); clamped here and
+        # in Config
         "max_flight_track_minutes": max(
-            0, min(1440, int_val(form.get("max_flight_track_minutes"), 0))
+            0,
+            min(
+                1440,
+                round(
+                    float_val(form.get("max_flight_track_minutes"), 0.0),
+                    2,
+                ),
+            ),
         ),
         # Lookup cache durations (route in hours, aircraft in days; clamped
         # here and in Config)
@@ -961,6 +980,7 @@ def _provider_ui_data(cfg) -> dict:
                 "name": spec.name,
                 "description": spec.description,
                 "capabilities": sorted(spec.capabilities),
+                "live_fields": sorted(spec.config.live_fields),
                 "configured": spec.config.is_configured(settings),
                 "missing_required": spec.config.missing_required(settings),
                 "fields": [field.as_dict_view() for field in spec.config.fields],

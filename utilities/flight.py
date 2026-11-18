@@ -27,6 +27,10 @@ from utilities.lookups.results import AircraftInfo, RouteInfo  # noqa: E402,F401
 # Telemetry fields compared by telemetry_changed()
 TELEMETRY_FIELDS = ("altitude", "ground_speed", "heading")
 
+# Transponder Mode-A codes that signal an in-flight emergency:
+# 7500 hijack, 7600 radio failure, 7700 general emergency.
+EMERGENCY_SQUAWKS = frozenset(("7500", "7600", "7700"))
+
 
 @dataclass
 class Flight:
@@ -45,6 +49,7 @@ class Flight:
 
     # Route info
     plane: str = ""
+    icao_type: str = ""  # ICAO type designator (e.g. "A20N"), when known
     registration: str = ""
     origin: str = ""
     destination: str = ""
@@ -60,6 +65,12 @@ class Flight:
     ground_speed: int = 0
     heading: int = 0
     vertical_speed: int = 0
+    # Live transponder Mode-A code (e.g. "7700").  Text, often blank -
+    # per-poll live data, not identity and not route info; the custom
+    # scroller omits it when empty.
+    squawk: str = ""
+    # km from the observer, computed at fetch time; 0 = unknown
+    distance_to_home: float = 0
 
     # -- Identity -----------------------------------------------------------
 

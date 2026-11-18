@@ -133,6 +133,7 @@ class AircraftInfo:
     """
 
     plane: str = ""
+    icao_type: str = ""  # ICAO type designator (e.g. "A20N"), when known
     registration: str = ""
     operator_icao: str = ""  # registered operator ICAO code (from Mode S hex)
     owner: str = ""  # registered owner's name (GA aircraft have no airline)
@@ -176,6 +177,7 @@ class RouteInfo:
     """
 
     plane: str = ""
+    icao_type: str = ""  # ICAO type designator (e.g. "A20N"), when known
     registration: str = ""
     airline_icao: str = ""  # operating carrier ICAO code for logo lookup
     operator_icao: str = ""  # registered operator of the airframe (Mode S)
@@ -255,10 +257,19 @@ class FlightObservation:
 
     # Pre-filled enrichment (from the live feed itself, highest priority)
     plane: str = ""
+    # readsb-dialect feeds carry the ICAO type designator (e.g. "A20N")
+    # alongside their free-text model description - the same database row
+    # that fills ``plane``, so one is usually present with the other.
+    icao_type: str = ""
     registration: str = ""
     origin: str = ""
     destination: str = ""
     airline_icao: str = ""
+    # Live transponder Mode-A code (4 octal digits) when the feed carries
+    # it.  Per-poll live data, never part of flight identity - codes are
+    # ATC-assigned, may change en route and are absent for non-
+    # transponding traffic, so treat blanks like any other live field.
+    squawk: str = ""
 
 
 @dataclass

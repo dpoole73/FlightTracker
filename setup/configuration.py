@@ -72,6 +72,9 @@ DEFAULT_DETAILS_CUSTOM_TEMPLATE = (
     "{plane} | {symbol:altitude} {altitude} {symbol:speed} {ground_speed} "
     "{symbol:heading} {heading}{symbol:degree}"
 )
+DEFAULT_SHOW_EMERGENCY_SQUAWK = (
+    False  # pin a 7500/7600/7700 squawk to the left of the details scroller
+)
 
 # Weather
 DEFAULT_WEATHERAPI_KEY = ""  # empty = weather disabled
@@ -96,7 +99,14 @@ DEFAULT_DISPLAY_SCAN_RATE = 16  # 1:16 or 1:32 multiplexing
 # Per-theme configuration (nested dict under "theme" in config.json)
 DEFAULT_FORECAST_DURATION = "3hour"  # 3hour / 12hour / 3day
 DEFAULT_THEME_FORECAST = {"duration": DEFAULT_FORECAST_DURATION}
-DEFAULT_THEME_CONDITIONS = {"disable_description_scroll": False}
+# Wind arrow on the conditions scene: "from" points the arrow toward the
+# bearing the wind blows from (weather-vane style, the original
+# behaviour); "to" points it toward the direction the wind is travelling.
+DEFAULT_WIND_ARROW_MODE = "from"  # from / to
+DEFAULT_THEME_CONDITIONS = {
+    "disable_description_scroll": False,
+    "wind_arrow_mode": DEFAULT_WIND_ARROW_MODE,
+}
 DEFAULT_THEME = {
     "forecast": DEFAULT_THEME_FORECAST,
     "conditions": DEFAULT_THEME_CONDITIONS,
@@ -232,6 +242,14 @@ DEFAULT_API_LIMIT_MODE = (
     "none"  # per-provider API call limiting: none / daily / monthly
 )
 
+# Boot
+#
+# When True the start-up connectivity tests (data source / TLE / routing
+# checks rendered before the splash screen) are skipped.  Set by running
+# with the ``--disable-tests`` flag - it is persisted here so the choice
+# survives reboots and web-driven restarts.
+DEFAULT_STARTUP_TESTS_DISABLED = False
+
 DEFAULTS: dict[str, Any] = {
     # Location / flight zone
     "flight_location_mode": DEFAULT_FLIGHT_LOCATION_MODE,
@@ -258,6 +276,7 @@ DEFAULTS: dict[str, Any] = {
     # Plane info row
     "details": DEFAULT_DETAILS,
     "details_custom_template": DEFAULT_DETAILS_CUSTOM_TEMPLATE,
+    "show_emergency_squawk": DEFAULT_SHOW_EMERGENCY_SQUAWK,
     # Weather
     "weatherapi_key": DEFAULT_WEATHERAPI_KEY,
     "weather_mode": DEFAULT_WEATHER_MODE,
@@ -371,6 +390,8 @@ DEFAULTS: dict[str, Any] = {
     "log_level": DEFAULT_LOG_LEVEL,
     # Provider usage tally (see utilities/lookups/usage.py + /api)
     "provider_usage_logging": DEFAULT_PROVIDER_USAGE_LOGGING,
+    # Boot: sticky state of the --disable-tests command-line flag
+    "startup_tests_disabled": DEFAULT_STARTUP_TESTS_DISABLED,
     # Per-provider API call limiting (see utilities/lookups/ratelimit.py;
     # per-provider api_limiting_enabled / api_limit live in the provider
     # settings subtree via the shared rate_limit_fields() descriptors)
@@ -1057,6 +1078,13 @@ class Config:
         )
 
     @property
+    def show_emergency_squawk(self) -> bool:
+        """Pin a 7500/7600/7700 squawk to the left of the details scroller."""
+        return bool(
+            self.data_store.get("show_emergency_squawk", DEFAULT_SHOW_EMERGENCY_SQUAWK)
+        )
+
+    @property
     def weatherapi_key(self) -> str:
         return str(self.data_store.get("weatherapi_key", DEFAULT_WEATHERAPI_KEY))
 
@@ -1158,6 +1186,8 @@ class Config:
         merged["disable_description_scroll"] = bool(
             merged.get("disable_description_scroll", False)
         )
+        if merged.get("wind_arrow_mode") not in ("from", "to"):
+            merged["wind_arrow_mode"] = DEFAULT_WIND_ARROW_MODE
         return merged
 
     @property
@@ -1613,12 +1643,14 @@ class Config:
             return DEFAULT_MAX_FLIGHT_LOOKUP
 
     @property
-    def max_flight_track_minutes(self) -> int:
+    def max_flight_track_minutes(self) -> float:
         """Max minutes to keep a sighted flight in the rotation, 0-1440.
 
         0 (default) tracks flights for as long as they remain in range.
+        Decimal values are allowed (0.5 = 30 seconds); seconds granularity
+        is 0.01 minutes of rounding.
         """
-        return self._clamped_int(
+        return self._clamped_float(
             "max_flight_track_minutes",
             DEFAULT_MAX_FLIGHT_TRACK_MINUTES,
             0,
@@ -1628,6 +1660,12 @@ class Config:
     def _clamped_int(self, key: str, default: int, lo: int, hi: int) -> int:
         try:
             return max(lo, min(hi, int(self.data_store.get(key, default))))
+        except (TypeError, ValueError):
+            return default
+
+    def _clamped_float(self, key: str, default: float, lo: float, hi: float) -> float:
+        try:
+            return round(max(lo, min(hi, float(self.data_store.get(key, default)))), 2)
         except (TypeError, ValueError):
             return default
 
@@ -1775,6 +1813,20 @@ class Config:
         return bool(
             self.data_store.get(
                 "provider_usage_logging", DEFAULT_PROVIDER_USAGE_LOGGING
+            )
+        )
+
+    @property
+    def startup_tests_disabled(self) -> bool:
+        """Sticky state of the ``--disable-tests`` boot flag.
+
+        True skips the start-up connectivity tests on every boot, machine
+        reboot included.  Persisted by :mod:`flight-tracker` when the flag
+        is passed on the command line.
+        """
+        return bool(
+            self.data_store.get(
+                "startup_tests_disabled", DEFAULT_STARTUP_TESTS_DISABLED
             )
         )
 
