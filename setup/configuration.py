@@ -160,7 +160,7 @@ DEFAULT_SOLAR_LOCAL_HOST = ""   # e.g. "192.168.4.72" - your Envoy's LAN IP
 DEFAULT_SOLAR_LOCAL_TOKEN = ""  # long-lived local access token (from Postman/Enlighten)
 
 # Solar history theme
-DEFAULT_SOLAR_HISTORY_REFRESH_SECONDS = 3600  # daily totals barely change intraday
+DEFAULT_SOLAR_HISTORY_REFRESH_SECONDS = 21600  # daily totals barely change intraday
 
 # Web interface
 DEFAULT_WEB_INTERFACE_ENABLED = True
