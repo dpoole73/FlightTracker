@@ -40,6 +40,7 @@ export const TEMPLATE_FIELDS = [
   { name: "operator_icao", label: "Registered operator ICAO code (from Mode S hex)", units: null },
   { name: "owner", label: "Registered owner name (e.g. for private/training aircraft)", units: null },
   { name: "plane", label: "Aircraft make & model", units: null },
+  { name: "icao_type", label: "ICAO type code (e.g. A20N for an Airbus A320-251N) - provider-dependent, omitted when unknown", units: null },
   { name: "registration", label: "Aircraft registration", units: null },
   { name: "origin", label: "Origin airport code", units: null },
   { name: "destination", label: "Destination airport code", units: null },
@@ -49,10 +50,16 @@ export const TEMPLATE_FIELDS = [
   { name: "destination_municipality", label: "Destination city", units: null },
   { name: "origin_country", label: "Origin country", units: null },
   { name: "destination_country", label: "Destination country", units: null },
+  { name: "squawk", label: "Transponder squawk code (provider-dependent - shows ---- when the feed doesn't supply it)", units: null },
   { name: "altitude", label: "Altitude", units: "ft, m" },
   { name: "ground_speed", label: "Ground speed", units: "knots/kts, kmh/kph, mph" },
   { name: "heading", label: "Heading (degrees)", units: "- (use {symbol:degree} for °)" },
   { name: "vertical_speed", label: "Vertical speed", units: "fpm, ms" },
+  {
+    name: "distance_to_home",
+    label: "Distance from observer",
+    units: "km, m, ft, miles/mi, nautical miles: nm (aliases: knots, knts)",
+  },
 ];
 
 export const TEMPLATE_SYMBOLS = [

@@ -59,6 +59,7 @@ TEXT_FIELDS: frozenset[str] = frozenset(
         "operator_icao",
         "owner",
         "plane",
+        "icao_type",
         "registration",
         "origin",
         "destination",
@@ -68,8 +69,14 @@ TEXT_FIELDS: frozenset[str] = frozenset(
         "destination_municipality",
         "origin_country",
         "destination_country",
+        "squawk",
     }
 )
+
+# Text fields that show a placeholder instead of being omitted when the
+# flight has no value.  A Mode-A squawk is always four digits on real
+# radar displays, so dashes keep the width and read as "no code".
+FIELD_PLACEHOLDERS: dict[str, str] = {"squawk": "----"}
 
 # Telemetry fields - rendered with fonts.small_symbols, colour THEME_PLANE_TLM.
 # Each maps to a set of valid unit strings and a conversion function.
@@ -121,6 +128,25 @@ def _convert_vertical_speed(vertical_speed_fpm: int, unit: str) -> tuple[str, st
     return str(int(vertical_speed_fpm * 0.00508)), "ms"
 
 
+def _convert_distance(distance_km: float, unit: str) -> tuple[str, str]:
+    """Convert distance (stored in km) to the requested unit.
+
+    ``knots``/``knts`` are accepted as aliases for nautical miles (nm) -
+    the distance unit behind the knot.  An empty unit (bare tag, no
+    config default) resolves to km.
+    """
+    if unit in ("", "km"):
+        return str(int(distance_km)), "km"
+    if unit == "m":
+        return str(int(distance_km * 1000)), "m"
+    if unit == "ft":
+        return str(int(distance_km * 3280.84)), "ft"
+    if unit in ("miles", "mi"):
+        return str(int(distance_km * 0.621371)), "mi"
+    # nm / knots / knts - nautical miles
+    return str(int(distance_km * 0.539957)), "nm"
+
+
 # Map telemetry field -> (valid units, conversion function, config default key).
 TELEMETRY_FIELDS: dict[str, tuple[frozenset[str], Callable, str | None]] = {
     "altitude": (frozenset({"ft", "m"}), _convert_altitude, "height_unit"),
@@ -131,6 +157,14 @@ TELEMETRY_FIELDS: dict[str, tuple[frozenset[str], Callable, str | None]] = {
     ),
     "heading": (frozenset(), _convert_heading, None),
     "vertical_speed": (frozenset({"fpm", "ms"}), _convert_vertical_speed, None),
+    # Distance from the observer, computed at fetch time (km canonical).
+    # No config default - a bare tag resolves to km.  "knots"/"knts" are
+    # aliases for nautical miles.
+    "distance_to_home": (
+        frozenset({"km", "m", "ft", "miles", "mi", "nm", "knots", "knts"}),
+        _convert_distance,
+        None,
+    ),
 }
 
 # All available fields (for validation / UI reference).
@@ -165,14 +199,14 @@ SYMBOL_MAP: dict[str, str] = {
 # Index = floor(heading / 45 + 0.5) % 8 (round half up, matching the
 # cardinal-direction logic from conditions_idle_theme._degrees_to_cardinal()).
 HEADING_ARROW_GLYPHS: tuple[str, ...] = (
-    chr(128),  # 0 = N
-    chr(129),  # 1 = NE
-    chr(130),  # 2 = E
-    chr(131),  # 3 = SE
-    chr(132),  # 4 = S
-    chr(133),  # 5 = SW
-    chr(134),  # 6 = W
-    chr(135),  # 7 = NW
+    chr(129),  # 0 = N
+    chr(130),  # 1 = NE
+    chr(131),  # 2 = E
+    chr(132),  # 3 = SE
+    chr(133),  # 4 = S
+    chr(134),  # 5 = SW
+    chr(135),  # 6 = W
+    chr(136),  # 7 = NW
 )
 
 # Cardinal direction names for heading_arrow (used for error messages).
@@ -477,13 +511,14 @@ def _build_field_spans(token: FieldToken, flight: Flight, cfg: Config) -> Spans:
 
     # Text fields - simple value span.
     if token.field in TEXT_FIELDS:
-        text = str(raw_value) if raw_value else ""
+        text = str(raw_value) if raw_value else FIELD_PLACEHOLDERS.get(token.field, "")
         if not text:
             return []
         colour = _resolve_colour(token.colour, THEME_PLANE)
-        # Text fields use regular font; plane model is uppercased to match
-        # the existing model_spans() behaviour.
-        if token.field == "plane":
+        # Text fields use regular font; plane model and its ICAO type
+        # designator are uppercased to match the existing model_spans()
+        # behaviour.
+        if token.field in ("plane", "icao_type"):
             text = text.upper()
         return [Span(colour, fonts.regular, text)]
 

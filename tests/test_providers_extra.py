@@ -19,6 +19,7 @@ def _record(**fields):
         "hex": "406df5",
         "flight": "GSGTS  ",
         "r": "G-SGTS",
+        "t": "DHC6",
         "desc": "De Havilland DHC-6 Twin Otter",
         "alt_baro": 6000,
         "gs": 161.1,
@@ -26,6 +27,7 @@ def _record(**fields):
         "baro_rate": -512,
         "lat": 55.5,
         "lon": -4.0,
+        "squawk": "6721",
     }
     record.update(fields)
     return record
@@ -82,7 +84,9 @@ class TestFlightAggregators:
         assert obs.callsign == "GSGTS"
         assert obs.altitude_ft == 6000
         assert obs.plane == "De Havilland DHC-6 Twin Otter"
+        assert obs.icao_type == "DHC6"
         assert obs.registration == "G-SGTS"
+        assert obs.squawk == "6721"
 
     def test_filters_outliers_and_orders_by_distance(self, module_name, envelope):
         payload = {
@@ -188,8 +192,98 @@ class TestAdsbImRoutes:
         assert result.is_unavailable
 
 
+# ---------------------------------------------------------------------------
+# FR24 free-feed - squawk via the FlightRadarAPI Flight attribute
+# ---------------------------------------------------------------------------
+
+
+class TestFr24FreeFeedSquawk:
+    def _obs(self, **flight_attrs):
+        from types import SimpleNamespace
+
+        from utilities.lookups.providers.fr24.flights import _to_observation
+
+        flight = SimpleNamespace(
+            icao_24bit="406DF5",
+            callsign="BAW1AB  ",
+            number="BA1AB",
+            latitude=55.5,
+            longitude=-4.0,
+            altitude=12000,
+            ground_speed=400,
+            heading=90,
+            vertical_speed=-64,
+            origin_airport_iata="LHR",
+            destination_airport_iata="DOH",
+            airline_icao="BAW",
+            **flight_attrs,
+        )
+        return _to_observation(flight)
+
+    def test_squawk_mapped(self):
+        assert self._obs(squawk="1000").squawk == "1000"
+
+    def test_missing_attribute_degrades_to_empty(self):
+        """Older FlightRadarAPI builds without Flight.squawk stay healthy."""
+        assert self._obs().squawk == ""
+
+
 def _context(callsign="BAW123", lat=55.5, lng=-4.0):
     return LookupContext(callsign=callsign, lat=lat, lng=lng)
+
+
+# ---------------------------------------------------------------------------
+# OpenSky state vector - squawk (index 14)
+# ---------------------------------------------------------------------------
+
+
+class TestOpenSkySquawk:
+    def _sv(self, overrides=None):
+        """A minimal-but-real OpenSky state vector (indices 0-16)."""
+        sv = [
+            "406df5",  # 0  icao24
+            "BAW1AB  ",  # 1  callsign
+            "United Kingdom",  # 2 origin_country
+            1700000000,  # 3 time_position
+            1700000010,  # 4 last_contact
+            -4.0,  # 5 longitude
+            55.5,  # 6 latitude
+            3657.6,  # 7 baro_altitude (m)
+            False,  # 8 on_ground
+            205.0,  # 9 velocity (m/s)
+            90.0,  # 10 true_track
+            0.0,  # 11 vertical_rate (m/s)
+            [],  # 12 sensors
+            3657.6,  # 13 geo_altitude
+            "7700",  # 14 squawk
+            False,  # 15 spi
+            0,  # 16 position_source
+        ]
+        for index, value in (overrides or {}).items():
+            sv[index] = value
+        return sv
+
+    def _obs(self, overrides=None):
+        from utilities.lookups.providers.opensky.flights import (
+            _sv_to_observation,
+        )
+
+        return _sv_to_observation(self._sv(overrides))
+
+    def test_squawk_mapped(self):
+        assert self._obs().squawk == "7700"
+
+    def test_null_squawk_is_empty(self):
+        assert self._obs(overrides={14: None}).squawk == ""
+
+    def test_short_vector_is_empty(self):
+        """Partial vectors the feed occasionally yields don't raise."""
+        sv = self._sv()[:12]
+        from utilities.lookups.providers.opensky.flights import (
+            _sv_to_observation,
+        )
+
+        assert _sv_to_observation(sv).squawk == ""
 
 
 # ---------------------------------------------------------------------------
@@ -436,6 +530,7 @@ def _fr24_record(**fields):
         "painted_as": "BAW",
         "type": "A35K",
         "reg": "G-XWBA",
+        "sqr": "1000",
     }
     record.update(fields)
     return record
@@ -501,10 +596,24 @@ class TestFr24ApiFlights:
         assert obs.origin == "LHR"
         assert obs.destination == "DOH"
         assert obs.airline_icao == "BAW"
+        assert obs.squawk == "1000"
         # Bounds use the zone corners, north-south-west-east order.
         assert captured["path"] == "/api/live/flight-positions/full"
         assert captured["params"]["bounds"] == "56.0,55.0,-5.0,-3.0"
         assert captured["token"] == "TOK"
+
+    def test_sorted_by_distance_from_home(self, monkeypatch):
+        result, _ = self._fetch(
+            monkeypatch,
+            data=[
+                _fr24_record(hex="far", lat=55.05, lon=-3.1),
+                _fr24_record(hex="near", lat=55.5, lon=-4.0),
+            ],
+        )
+        assert result.is_found
+        # Observer is at (55.5, -4.0): the overhead flight sorts first even
+        # though the feed listed it second.
+        assert [o.icao for o in result.value] == ["near", "far"]
 
     def test_no_token_is_unavailable(self):
         import utilities.lookups.providers.fr24api.flights as fr24api
@@ -624,6 +733,8 @@ class TestFr24ApiAircraft:
         assert result.is_found
         assert result.value.registration == "G-XWBA"
         assert result.value.plane == "A35K"
+        # FR24's "type" doubles as the ICAO type code.
+        assert result.value.icao_type == "A35K"
         assert result.value.operator_icao == "BAW"
 
     def test_unknown_callsign_is_not_found(self, monkeypatch):
@@ -756,6 +867,19 @@ class TestFr24ApiCatalogue:
         assert "free providers" in text
 
 
+class TestAirplanesLiveCard:
+    def test_contributor_limitation_surfaces_for_users(self):
+        """The card must explain api.airplanes.live only answers callers
+        already feeding the network (#123)."""
+        from utilities.lookups.registry import PROVIDERS
+
+        spec = PROVIDERS["airplaneslive"]
+        text = spec.description  # description is a plain str
+        assert "contributor" in text.lower()
+        assert "403" in text
+        assert "how-to-feed" in text
+
+
 # ---------------------------------------------------------------------------
 # 4xx ident-rejection semantics (#101 family): providers must treat
 # parameter/format rejections as NOT_FOUND and never quarantine.
@@ -796,6 +920,64 @@ class TestAdsbDbRejectedIdent:
                 LookupContext(callsign="", mode_s="zz zz")
             )
         assert result.is_not_found
+
+
+class TestAdsbDbAircraftType:
+    """adsbdb carries the ICAO type designator alongside its full model."""
+
+    _RESPONSE = {
+        "response": {
+            "aircraft": {
+                "type": "A320 251NSL",
+                "icao_type": "A20N",
+                "manufacturer": "Airbus",
+                "mode_s": "40772F",
+                "registration": "G-UZHZ",
+                "registered_owner_operator_flag_code": "EZY",
+                "registered_owner": "easyJet Airline",
+            }
+        }
+    }
+
+    def test_parse_keeps_short_code(self):
+        import utilities.lookups.providers.adsbdb.aircraft as adsbdb_aircraft
+
+        info = adsbdb_aircraft.parse_aircraft(self._RESPONSE)
+
+        assert info.plane == "Airbus A20N"
+        assert info.icao_type == "A20N"
+
+    def test_parse_without_short_code(self):
+        import utilities.lookups.providers.adsbdb.aircraft as adsbdb_aircraft
+
+        data = {
+            "response": {
+                "aircraft": {
+                    "type": "A320 251NSL",
+                    "icao_type": "",
+                    "manufacturer": "Airbus",
+                    "registration": "G-UZHZ",
+                }
+            }
+        }
+        info = adsbdb_aircraft.parse_aircraft(data)
+
+        assert info.plane == "A320 251NSL"
+        assert info.icao_type == ""
+
+    def test_provider_found_passes_short_code_through(self):
+        import utilities.lookups.providers.adsbdb.aircraft as adsbdb_aircraft
+
+        provider = adsbdb_aircraft.AircraftProvider({})
+        with mock.patch.object(
+            adsbdb_aircraft, "_get", return_value=_response(self._RESPONSE)
+        ):
+            result = provider.lookup_aircraft(
+                LookupContext(callsign="", mode_s="40772f")
+            )
+
+        assert result.is_found
+        assert result.value.icao_type == "A20N"
 
 
 class TestAeroDataBoxRejectedParams:

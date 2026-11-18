@@ -174,6 +174,20 @@ class TestParseTemplate:
         assert isinstance(tokens[0], FieldToken)
         assert tokens[0].unit == "kph"
 
+    def test_distance_field_tag(self):
+        tokens = parse_template("{distance_to_home}")
+        assert len(tokens) == 1
+        assert isinstance(tokens[0], FieldToken)
+        assert tokens[0].field == "distance_to_home"
+        assert tokens[0].unit is None
+
+    def test_distance_with_unit(self):
+        tokens = parse_template("{distance_to_home:nm}")
+        assert len(tokens) == 1
+        assert isinstance(tokens[0], FieldToken)
+        assert tokens[0].field == "distance_to_home"
+        assert tokens[0].unit == "nm"
+
 
 # ---------------------------------------------------------------------------
 # build_custom_spans - span construction
@@ -222,6 +236,29 @@ class TestBuildCustomSpans:
         spans = build_custom_spans("{registration}", flight, cfg)
         assert len(spans) == 1
         assert spans[0].text == "G-ZBKA"
+
+    def test_icao_type_span(self):
+        flight = make_flight(icao_type="A20N")
+        cfg = make_cfg()
+        spans = build_custom_spans("{icao_type}", flight, cfg)
+        assert len(spans) == 1
+        assert spans[0].text == "A20N"
+
+    def test_icao_type_omitted_when_unknown(self):
+        """The {reg} - {icao_type} pattern degrades to just the reg."""
+        flight = make_flight(icao_type="")
+        cfg = make_cfg()
+        spans = build_custom_spans("{registration} - {icao_type}", flight, cfg)
+        texts = [s.text for s in spans if s.text]
+        # The empty field is dropped; template literals render as usual.
+        assert texts == ["G-ZBKA", " - "]
+
+    def test_squawk_span(self):
+        flight = make_flight(squawk="7700")
+        cfg = make_cfg()
+        spans = build_custom_spans("{squawk}", flight, cfg)
+        assert len(spans) == 1
+        assert spans[0].text == "7700"
 
     def test_origin_destination_spans(self):
         flight = make_flight()
@@ -332,6 +369,95 @@ class TestBuildCustomSpans:
         assert "2" in texts
         assert "ms" in texts
 
+    def test_distance_default_km(self):
+        # Bare tag has no config default - resolves to km
+        flight = make_flight(distance_to_home=12.5)
+        cfg = make_cfg()
+        spans = build_custom_spans("{distance_to_home}", flight, cfg)
+        texts = [s.text for s in spans]
+        assert "12" in texts
+        assert "km" in texts
+
+    def test_distance_m(self):
+        flight = make_flight(distance_to_home=12.5)
+        cfg = make_cfg()
+        spans = build_custom_spans("{distance_to_home:m}", flight, cfg)
+        texts = [s.text for s in spans]
+        # 12.5 km * 1000 = 12500 m
+        assert "12500" in texts
+        assert "m" in texts
+
+    def test_distance_ft(self):
+        flight = make_flight(distance_to_home=12.5)
+        cfg = make_cfg()
+        spans = build_custom_spans("{distance_to_home:ft}", flight, cfg)
+        texts = [s.text for s in spans]
+        # 12.5 km * 3280.84 = 41010.5 -> 41010 ft
+        assert "41010" in texts
+        assert "ft" in texts
+
+    def test_distance_miles(self):
+        flight = make_flight(distance_to_home=12.5)
+        cfg = make_cfg()
+        spans = build_custom_spans("{distance_to_home:miles}", flight, cfg)
+        texts = [s.text for s in spans]
+        # 12.5 km * 0.621371 = 7.77 -> 7 mi
+        assert "7" in texts
+        assert "mi" in texts
+
+    def test_distance_mi_alias(self):
+        flight = make_flight(distance_to_home=12.5)
+        cfg = make_cfg()
+        spans = build_custom_spans("{distance_to_home:mi}", flight, cfg)
+        texts = [s.text for s in spans]
+        assert "7" in texts
+        assert "mi" in texts
+
+    def test_distance_nm(self):
+        flight = make_flight(distance_to_home=12.5)
+        cfg = make_cfg()
+        spans = build_custom_spans("{distance_to_home:nm}", flight, cfg)
+        texts = [s.text for s in spans]
+        # 12.5 km * 0.539957 = 6.75 -> 6 nm
+        assert "6" in texts
+        assert "nm" in texts
+
+    def test_distance_knots_alias(self):
+        # "knots" is accepted as a nautical-mile alias, suffix normalised to nm
+        flight = make_flight(distance_to_home=12.5)
+        cfg = make_cfg()
+        spans = build_custom_spans("{distance_to_home:knots}", flight, cfg)
+        texts = [s.text for s in spans]
+        assert "6" in texts
+        assert "nm" in texts
+
+    def test_distance_knts_alias(self):
+        flight = make_flight(distance_to_home=12.5)
+        cfg = make_cfg()
+        spans = build_custom_spans("{distance_to_home:knts}", flight, cfg)
+        texts = [s.text for s in spans]
+        assert "6" in texts
+        assert "nm" in texts
+
+    def test_distance_zero_renders_zero(self):
+        # 0 = unknown, but renders like the other telemetry fields do
+        flight = make_flight(distance_to_home=0)
+        cfg = make_cfg()
+        spans = build_custom_spans("{distance_to_home}", flight, cfg)
+        texts = [s.text for s in spans]
+        assert "0" in texts
+        assert "km" in texts
+
+    def test_distance_custom_colour(self):
+        flight = make_flight(distance_to_home=12.5)
+        cfg = make_cfg()
+        spans = build_custom_spans("{distance_to_home:km:#FF8800}", flight, cfg)
+        from display.rgbpanel import Colour
+
+        for s in spans:
+            if s.text.isdigit() or s.text == "km":
+                assert s.colour == Colour(255, 136, 0)
+
     def test_symbol_span(self):
         flight = make_flight()
         cfg = make_cfg()
@@ -401,6 +527,31 @@ class TestBuildCustomSpans:
         # plane is empty (skipped), space literal, callsign present
         assert "BAW123" in texts
 
+    def test_empty_squawk_dropped(self):
+        """Non-transponding aircraft show the squawk placeholder."""
+        flight = make_flight(callsign="BAW123", squawk="")
+        cfg = make_cfg()
+        spans = build_custom_spans("{callsign} | {squawk}", flight, cfg)
+        texts = [s.text for s in spans if s.text]
+        assert texts == ["BAW123", " | ", "----"]
+
+    def test_empty_field_without_placeholder_dropped(self):
+        """Empty text fields without a placeholder are still omitted."""
+        flight = make_flight(callsign="BAW123", registration="")
+        cfg = make_cfg()
+        spans = build_custom_spans("{callsign} | {registration}", flight, cfg)
+        texts = [s.text for s in spans if s.text]
+        assert texts == ["BAW123", " | "]
+
+    def test_squawk_placeholder_colour(self):
+        flight = make_flight(squawk="")
+        cfg = make_cfg()
+        spans = build_custom_spans("{squawk:#FF0000}", flight, cfg)
+        from display.rgbpanel import Colour
+
+        assert spans[0].colour == Colour(255, 0, 0)
+        assert spans[0].text == "----"
+
     def test_custom_colour_applied(self):
         flight = make_flight()
         cfg = make_cfg()
@@ -426,6 +577,15 @@ class TestBuildCustomSpans:
         from display.rgbpanel import Colour
 
         assert spans[0].colour == Colour(0, 0, 255)
+
+    def test_squawk_custom_colour(self):
+        flight = make_flight(squawk="7700")
+        cfg = make_cfg()
+        spans = build_custom_spans("{squawk:#FF0000}", flight, cfg)
+        from display.rgbpanel import Colour
+
+        assert spans[0].colour == Colour(255, 0, 0)
+        assert spans[0].text == "7700"
 
     def test_custom_colour_with_unit(self):
         flight = make_flight(altitude=38000)
@@ -580,6 +740,17 @@ class TestValidateTemplate:
             for unit in units:
                 assert validate_template("{" + field + ":" + unit + "}") == []
 
+    def test_valid_distance_units(self):
+        for unit in ("km", "m", "ft", "miles", "mi", "nm", "knots", "knts"):
+            assert validate_template("{distance_to_home:" + unit + "}") == []
+
+    def test_invalid_distance_unit(self):
+        # "kts" is a speed unit, not a distance one
+        errors = validate_template("{distance_to_home:kts}")
+        assert len(errors) == 1
+        assert "kts" in errors[0]
+        assert "distance_to_home" in errors[0]
+
 
 # ---------------------------------------------------------------------------
 # heading_arrow - dynamic directional symbol
@@ -594,90 +765,90 @@ class TestHeadingArrow:
             "{heading_arrow}", make_flight(heading=0), make_cfg()
         )
         assert len(spans) == 1
-        assert spans[0].text == chr(128)  # N
+        assert spans[0].text == chr(129)  # N
 
     def test_north_360(self):
         spans = build_custom_spans(
             "{heading_arrow}", make_flight(heading=360), make_cfg()
         )
-        assert spans[0].text == chr(128)  # N
+        assert spans[0].text == chr(129)  # N
 
     def test_northeast_45(self):
         spans = build_custom_spans(
             "{heading_arrow}", make_flight(heading=45), make_cfg()
         )
-        assert spans[0].text == chr(129)  # NE
+        assert spans[0].text == chr(130)  # NE
 
     def test_east_90(self):
         spans = build_custom_spans(
             "{heading_arrow}", make_flight(heading=90), make_cfg()
         )
-        assert spans[0].text == chr(130)  # E
+        assert spans[0].text == chr(131)  # E
 
     def test_southeast_135(self):
         spans = build_custom_spans(
             "{heading_arrow}", make_flight(heading=135), make_cfg()
         )
-        assert spans[0].text == chr(131)  # SE
+        assert spans[0].text == chr(132)  # SE
 
     def test_south_180(self):
         spans = build_custom_spans(
             "{heading_arrow}", make_flight(heading=180), make_cfg()
         )
-        assert spans[0].text == chr(132)  # S
+        assert spans[0].text == chr(133)  # S
 
     def test_southwest_225(self):
         spans = build_custom_spans(
             "{heading_arrow}", make_flight(heading=225), make_cfg()
         )
-        assert spans[0].text == chr(133)  # SW
+        assert spans[0].text == chr(134)  # SW
 
     def test_west_270(self):
         spans = build_custom_spans(
             "{heading_arrow}", make_flight(heading=270), make_cfg()
         )
-        assert spans[0].text == chr(134)  # W
+        assert spans[0].text == chr(135)  # W
 
     def test_northwest_315(self):
         spans = build_custom_spans(
             "{heading_arrow}", make_flight(heading=315), make_cfg()
         )
-        assert spans[0].text == chr(135)  # NW
+        assert spans[0].text == chr(136)  # NW
 
     def test_boundary_22_rounds_to_ne(self):
         # 22 / 45 = 0.49 -> round = 0 -> N
         spans = build_custom_spans(
             "{heading_arrow}", make_flight(heading=22), make_cfg()
         )
-        assert spans[0].text == chr(128)  # N
+        assert spans[0].text == chr(129)  # N
 
     def test_boundary_23_rounds_to_ne(self):
         # 23 / 45 = 0.51 -> round = 1 -> NE
         spans = build_custom_spans(
             "{heading_arrow}", make_flight(heading=23), make_cfg()
         )
-        assert spans[0].text == chr(129)  # NE
+        assert spans[0].text == chr(130)  # NE
 
     def test_boundary_337_rounds_to_nw(self):
         # 337 / 45 = 7.49 -> round = 7 -> NW
         spans = build_custom_spans(
             "{heading_arrow}", make_flight(heading=337), make_cfg()
         )
-        assert spans[0].text == chr(135)  # NW
+        assert spans[0].text == chr(136)  # NW
 
     def test_boundary_338_rounds_to_n(self):
         # 338 / 45 = 7.51 -> round = 8 -> 8 % 8 = 0 -> N
         spans = build_custom_spans(
             "{heading_arrow}", make_flight(heading=338), make_cfg()
         )
-        assert spans[0].text == chr(128)  # N
+        assert spans[0].text == chr(129)  # N
 
     def test_heading_zero_default(self):
         # heading=0 (falsy) should still produce N
         spans = build_custom_spans(
             "{heading_arrow}", make_flight(heading=0), make_cfg()
         )
-        assert spans[0].text == chr(128)
+        assert spans[0].text == chr(129)
 
     def test_custom_colour(self):
         spans = build_custom_spans(
@@ -696,7 +867,7 @@ class TestHeadingArrow:
         texts = [s.text for s in spans]
         assert "270" in texts
         assert "*" in texts  # degree symbol
-        assert chr(134) in texts  # W arrow
+        assert chr(135) in texts  # W arrow
 
     def test_validate_heading_arrow_valid(self):
         assert validate_template("{heading_arrow}") == []

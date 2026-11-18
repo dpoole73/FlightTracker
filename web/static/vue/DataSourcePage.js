@@ -312,9 +312,10 @@ export default defineComponent({
         <label class="form-label small" for="max_flight_track_minutes">Max tracking time (minutes)</label>
         <input type="number" class="form-control form-control-sm" id="max_flight_track_minutes"
                name="max_flight_track_minutes" v-model.number="store.config.max_flight_track_minutes"
-               min="0" max="1440" style="width:6rem" />
+               min="0" max="1440" step="any" style="width:6rem" />
         <div class="form-text text-muted small">
           Drop a flight from the display once it has been tracked for this many minutes.
+          Decimal values are allowed (<code>0.5</code> = 30 seconds).
           A value of <code>0</code> disables this feature.
         </div>
       </div>
@@ -324,6 +325,24 @@ export default defineComponent({
     <div id="group-provider-config" class="mb-3">
 
       <h3 class="fs-4 fw-semibold my-3"><i class="bi bi-sliders me-2"></i>Provider Settings</h3>
+
+      <table class="mb-3">
+        <tr>
+            <th colspan="2" class="text-muted ps-1">Provider capabilities</th>
+        </tr>
+        <tr>
+            <td><span class="badge text-bg-light text-secondary">flights</span></td>
+            <td>Live flight positions</td>
+            <td><span class="badge text-bg-light text-secondary ms-3">aircraft</span></td>
+            <td>Aircraft details</td>
+        </tr>
+        <tr>
+            <td><span class="badge text-bg-light text-secondary">routes</span></td>
+            <td>Origin/destination airports</td>
+            <td><span class="badge text-bg-light text-secondary ms-3">squawk</span></td>
+            <td>Squawk codes</td>
+        </tr>
+      </table>
 
       <div class="row g-3">
         <div v-for="meta in sortedProvidersMeta" :key="meta.id" class="col-12 col-lg-6">
@@ -400,7 +419,12 @@ export default defineComponent({
               <span v-else-if="meta.missing_required.length" class="badge me-1 text-bg-warning">
                 missing {{ meta.missing_required.join(', ') }}
               </span>
-              <span class="badge me-1 text-bg-light text-secondary">{{ meta.capabilities.join(' / ') }}</span>
+              <span class="badge me-1 text-bg-light text-secondary">
+                <template v-for="(term, ti) in [...meta.capabilities, ...meta.live_fields]" :key="term"
+                ><span v-if="ti > 0"> / </span><span
+                    :title="meta.live_fields.includes(term) ? 'Provided live by this feed - usable as {'+term+'} in the custom scroller' : undefined"
+                  >{{ term }}</span></template>
+              </span>
             </div>
           </div>
         </div>

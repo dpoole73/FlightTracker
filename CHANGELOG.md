@@ -4,6 +4,27 @@ All notable changes to FlightTracker are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.12.6]
+
+- Plane direction arrow lookup fixed
+- Wind direction config option for current-conditions scene
+
+## [2.12.5]
+
+- New "Plane Info Row" option to highlight an aircraft
+  squawking an emergency: the squawk code (7500 hijack, 7600 radio failure,
+  7700 general emergency)
+- Added the aircraft's ICAO type code to the custom scroller fields as
+  `{icao_type}` (e.g. `A20N` for an Airbus A320-251N).
+- The airplanes.live card in the Data Source settings now explains that its
+  API is contributor-only
+
+## [v2.12.4] - 2026-10-16
+- Added squawk codes to the custom scroller fields
+
+## [v2.12.3] - 2026-10-15
+- Added distance_to_home to the custom scroller fields
+
 ## [v2.12.2] - 2026-09-26
 - Last patch broken the save mechanism in the settings. This fixes it.
 - See this issue for more details on how to fix a broken system:
